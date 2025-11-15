@@ -1,0 +1,229 @@
+#!/usr/bin/python3
+
+# Copyright (c) 2024 Tianyi Gao, University of Edinburgh
+#
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR(S) DISCLAIM ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL AUTHORS BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+# Copyright (c) 2023 Stanford University
+#
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR(S) DISCLAIM ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL AUTHORS BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+import argparse
+import re
+import subprocess
+from glob import glob
+import os
+
+interface = None
+interface_pcie_bus = None
+
+cpu_info = []
+num_phys_cores = 0
+num_logic_cores = 0
+num_sockets = 0
+
+num_queues_tuple = None
+
+def read_interface_info(args_interface):
+    global interface, interface_pcie_bus
+
+    interface = args_interface
+
+    uevent_path = f"/sys/class/net/{interface}/device/uevent"
+
+    if not os.path.isfile(uevent_path):
+        raise Exception(f"Cannot find the interface ({interface})")
+
+    interface_pcie_bus = ""
+
+    with open(uevent_path, "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            if "PCI_SLOT_NAME" in line:
+                interface_pcie_bus = line.split("=")[1].strip()
+                break
+
+    if not interface_pcie_bus:
+        raise Exception(f"Cannot find the PCIe bus of interface ({interface})")
+
+    print(f"Interface {interface} is on PCIe bus {interface_pcie_bus}")
+
+def read_cpu_info():
+    """
+    Read the file /proc/cpuinfo and store information from it in various
+    global arrays above.
+    """
+    global cpu_info, num_phys_cores, num_logic_cores, num_sockets
+
+    if len(cpu_info) > 0:
+        return
+    cpu = None
+    cores = {}
+    sockets = {}
+    f = open("/proc/cpuinfo", "r")
+    for line in f:
+        match = re.match('([^\t]*)[\t ]+: (.*)', line)
+        if match:
+            name = match.group(1)
+            value = match.group(2)
+            # print("name '%s' value '%s'" % (name, value))
+            if name == 'processor':
+                cpu = int(value)
+                cpu_info.append({name: int(value)})
+            elif cpu == None:
+                continue
+            if name == "core id":
+                cpu_info[-1][name] = int(value)
+                cores[value] = 1
+            elif name == "physical id":
+                cpu_info[-1][name] = int(value)
+                sockets[value] = 1
+    f.close()
+    num_phys_cores = len(cores)
+    num_logic_cores = len(cpu_info)
+    num_sockets = len(sockets)
+    if num_phys_cores * num_sockets == num_logic_cores:
+        print("This node has %d socket(s), %d logical cores, no hyperthreading" % (
+                len(sockets), num_logic_cores))
+    else:
+        print("This node has %d socket(s), %d logical cores, %d-way "
+                "hyperthreading" % (len(sockets), num_logic_cores,
+                num_logic_cores/(num_phys_cores * num_sockets)))
+
+def read_combined_queues():
+    global num_queues_tuple
+    if (num_queues_tuple == None):
+        output = subprocess.run(["bash", "-c", f"ethtool -l {interface} | grep Combined"],
+                                capture_output=True, text=True).stdout
+        num_queues_tuple = re.findall(r'\d+', output)
+        if (len(num_queues_tuple) != 2):
+            raise Exception(f"get queue info failed ({num_queues_tuple})")
+        num_queues_tuple = (int(num_queues_tuple[0]), int(num_queues_tuple[1]))
+        print(f"Interface {interface} max combined {num_queues_tuple[0]} current combined {num_queues_tuple[1]}")
+    return num_queues_tuple
+
+def get_max_combined_queues():
+    global num_queues_tuple
+    return num_queues_tuple[0]
+
+def config_combined_queues_num(num_queues):
+    global interface, num_queues_tuple
+    """Configure the number of combined queues for a network interface."""
+    if (num_queues > num_queues_tuple[0]):
+        raise Exception(f"num of queues to set ({num_queues}) is larger than max ({num_queues_tuple[0]})")
+    subprocess.run(["sudo", "ethtool", "-L", interface, "combined", str(num_queues)], check=True)
+    num_queues_tuple = None
+    read_combined_queues()
+
+def gen_cpu_mask(core_id):
+    s = "{:x}".format(1 << core_id)
+    reversed_s = s[::-1]
+    formatted_reversed_s = ','.join(reversed_s[i:i+8] for i in range(0, len(reversed_s), 8))
+    s = formatted_reversed_s[::-1]
+    return s
+
+def config_combined_queues_irq_aff(cores):
+    global interface_pcie_bus
+    irq_stats = []
+    irq_ids = []
+    with open(f"/proc/interrupts", "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            if line.find("mlx5_comp") != -1 and line.find(f"{interface_pcie_bus}") != -1:
+                line = re.sub(r'\s+', ' ', line.strip())
+                irq_stats.append(line)
+                irq_ids.append(line.split(":")[0])
+    print(f"Found {len(irq_ids)} irqs")
+
+    core_idx = -1
+    for irq_idx, irq_id in enumerate(irq_ids):
+        core_idx = (core_idx + 1) % len(cores)
+        cpu_mask = gen_cpu_mask(cores[core_idx])
+        print(f"Set irq smp_affinity {irq_stats[irq_idx].split()[-1]} to core {cores[core_idx]}")
+        subprocess.run(["sudo", "bash", "-c", f"echo {cpu_mask} > /proc/irq/{irq_id}/smp_affinity"], check=True)
+        subprocess.run(["sudo", "bash", "-c", f"cat /proc/irq/{irq_id}/smp_affinity"], check=True, text=True)
+
+def apply_mode_settings(args):
+    """Apply settings based on the selected mode."""
+    if args.mode == 'onenuma':
+        args.queues = get_max_combined_queues()
+        args.numa = 0
+    if args.mode == 'onecore':
+        args.queues = get_max_combined_queues()
+        args.cores = [0]
+    if args.mode == 'reset' or args.mode == 'allnuma':
+        args.queues = get_max_combined_queues()
+        args.cores = [cpu['processor'] for cpu in cpu_info]
+    if args.mode == 'manual':
+        if args.queues == None:
+            args.queues = get_max_combined_queues()
+        if args.numa == None and args.cores == None:
+            args.cores = [cpu['processor'] for cpu in cpu_info]
+
+    if args.numa != None and args.cores != None:
+        raise Exception("numa and cores can not be set together")
+
+    if args.numa != None:
+        if args.numa >= num_sockets:
+            raise Exception(f"numa {args.numa} is out of index")
+        args.cores = [cpu['processor'] for cpu in cpu_info if cpu['physical id'] == args.numa]
+
+    for core in args.cores:
+        if core >= num_logic_cores:
+            raise Exception(f"core {core} is out of index")
+
+def parse_cores(value):
+    try:
+        return [int(x) for x in value.split(',')]
+    except ValueError:
+        raise argparse.ArgumentTypeError("Cores must be a comma-separated list of integers")
+
+def main():
+    parser = argparse.ArgumentParser(description="Network Interface Configuration Tool", formatter_class=argparse.RawTextHelpFormatter)
+    mode_help = (
+        "'onecore' (enable all queues, set irq aff to numa node 0 all cores, i.e. CPU0)\n"
+        "'onenuma' (enable all queues, set irq aff to numa node 0 core 0, i.e CPU0CORE0)\n"
+        "'allnuma'/'reset' (resets settings to default)\n"
+        "'manual' (manually set queues and cores)\n"
+    )
+
+    parser.add_argument("-m", "--mode", type=str, required=True, choices=['onecore', 'onenuma', 'allnuma', 'reset', 'manual'], help=mode_help)
+    parser.add_argument("-i", "--interface", type=str, required=True, help="Network interface name, e.g., eth0")
+    parser.add_argument("-q", "--queues", type=int, help="Number of (combined) queues to use (only in manual mode)")
+    parser.add_argument("-n", "--numa", type=int, help="NUMA node (0-indexed) for queue to interrupt in a round-robin fashion (only in manual mode), cannot be set together with -c/--cores")
+    parser.add_argument("-c", "--cores", type=parse_cores, help="Comma-separated list of cores (0-indexed) for queues to interrupt in a round-robin fashion (only in manual mode) cannot be set together with -n/--numa")
+
+    args = parser.parse_args()
+
+    read_cpu_info()
+    read_interface_info(args.interface)
+    read_combined_queues()
+    apply_mode_settings(args)
+
+    print(args)
+
+    config_combined_queues_num(args.queues)
+    config_combined_queues_irq_aff(args.cores)
+
+if __name__ == "__main__":
+    main()

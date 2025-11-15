@@ -1,0 +1,53 @@
+#!/bin/sh
+
+# Copyright (c) 2019-2020, Stanford University
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE
+
+# This script copies modified information from this directory to the
+# CloudLab machines given by the arguments (defaults are provided if no
+# arguments).
+
+username="ouster"
+
+if [ $# -eq 0 ]; then
+    targets=`cat $HOME/.cloudlabNode`
+else
+    targets=$*
+fi
+
+for t in $targets; do
+    echo $t
+    rsync -rtv --exclude-from=rsync-exclude.txt ./ ouster@$t:homaModule/
+done
+for t in $targets; do
+    echo $t
+    rsync -rtv cloudlab/bin/ $username@$t:bin/
+    rsync -rtv cloudlab/bash_profile $username@$t:.bash_profile
+    rsync -rtv cloudlab/bashrc $username@$t:.bashrc
+    rsync -rtv cloudlab/gdbinit $username@$t:.gdbinit
+    if [ -e ~/.ssh/cloudlab_ed25519.pub ] && [ -e ~/.ssh/cloudlab_ed25519 ]; then
+        rsync -rtvL ~/.ssh/cloudlab_ed25519.pub ~/.ssh/cloudlab_ed25519 $username@$t:.ssh/
+        ssh $t 'if [ ! -e .ssh/id_ed25519 ]; then
+            cp .ssh/cloudlab_ed25519 .ssh/id_ed25519
+            fi'
+    elif [ -e ~/.ssh/cloudlab_rsa.pub ] && [ -e ~/.ssh/cloudlab_rsa ]; then
+        rsync -rtvL ~/.ssh/cloudlab_rsa.pub ~/.ssh/cloudlab_rsa $username@$t:.ssh/
+        ssh $t 'if [ ! -e .ssh/id_rsa ]; then
+            cp .ssh/cloudlab_rsa .ssh/id_rsa
+            fi'
+    else
+        echo "Can not find cloudlab key pairs"
+        false
+    fi
+done

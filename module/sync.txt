@@ -1,0 +1,73 @@
+This file describes the synchronization strategy used for Homa.
+
+* In the Linux TCP/IP stack, the primary locking mechanism is a lock
+  per socket. However, per-socket locks aren't adequate for Homa, because
+  sockets are "larger" in Homa. In TCP, a socket corresponds to a single
+  connection between the source and destination; an application can have
+  hundreds or thousands of sockets open at once, so per-socket locks leave
+  lots of opportunities for concurrency. With Homa, a single socket can be
+  used for communicating with any number of peers, so there will typically
+  be no more than one socket per thread. As a result, a single Homa socket
+  must support many concurrent RPCs efficiently, and a per-socket lock would
+  create a bottleneck (Homa tried this approach initially).
+
+* Thus, the primary lock used in Homa is a per-RPC spinlock. This allows operations
+  on different RPCs to proceed concurrently. RPC locks are actually stored in
+  the hash table buckets used to look them up. This is important because it
+  makes looking up RPCs and locking them atomic. Without this approach it
+  is possible that an RPC could get deleted after it was looked up but before
+  it was locked.
+
+* Certain operations are not permitted while holding spinlocks, such as memory
+  allocation and copying data to/from user space (spinlocks disable
+  interrupts, so the holder must not block). RPC locks are spinlocks,
+  and that results in awkward code in several places to move prohibited
+  operations outside the locked regions. In particular, there is extra
+  complexity to make sure that RPCs are not garbage-collected while these
+  operations are occurring without a lock.
+
+* There are several other locks in Homa besides RPC locks. When multiple
+  locks are held, they must always be acquired in a consistent order, in
+  order to prevent deadlock. For each lock, here are the other locks that
+  may be acquired while holding the given lock.
+  * RPC: socket, grantable, throttle, peer->ack_lock
+  * Socket: port_map.write_lock
+  Any lock not listed above must be a "leaf" lock: no other lock will be
+  acquired while holding the lock.
+
+* Homa's approach means that socket shutdown and deletion can potentially
+  occur while operations are underway that hold RPC locks but not the socket
+  lock. This creates several potential problems:
+  * A socket might be deleted and its memory reclaimed while an RPC still
+    has access to it. Home assumes that Linux will prevent socket deletion
+    while the kernel call is executing. In situations outside kernel call
+    handling, Homa uses rcu_read_lock to prevent socket deletion.
+  * A socket might be shut down while there are active operations on
+    RPCs. For example, a new RPC creation might be underway when a socket
+    is shut down, which could add the new RPC after all of its RPCs
+    have supposedly been deleted. Handling this requires careful ordering
+    of operations during shutdown, plus the rest of Homa must be careful
+    never to add new RPCs to a socket that has been shut down.
+
+* There are a few places where Homa needs to scan all of the active RPCs
+  for a socket, such as the timer. Such code will lock each RPC that it
+  finds, but there is a risk that an RPC could be deleted and its memory
+  recycled before it can be locked; this could result in corruption. Locking
+  the socket for the duration of the scan would prevent this problem, but
+  that isn't possible because of the locking order constraints. It's OK if
+  the RPC gets deleted, as long as its memory doesn't get reclaimed. The
+  RCU mechanism could be used for this, but RCU results in *very* long delays
+  before final reclamation (tens of ms), even without contention, which means
+  that a large number of dead RPCs could accumulate. Thus I decided not to use
+  the Linux RCU mechanism. Instead, Homa has a special-purpose RCU-like
+  mechanism via the function homa_protect_rpcs; this function prevents RPC
+  reaping for a socket. RPCs can still be deleted, but their memory won't go
+  away until homa_unprotect_rpcs is invoked.
+
+* There are also a few places where Homa is doing something related to an
+  RPC (such as copying message data to user space) and needs the RPC to stay
+  around, but it isn't holding the RPC lock. In this situations, Homa sets
+  a bit in rpc->flags and homa_rpc_reap will not reap RPCs with any of these
+  flags set. In addition, Homa also keeps two counters rpc->grants_in_progress
+  and rpc->msgout.active_xmits so homa_rpc_reap will not reap when the counter
+  is not equal to zero.

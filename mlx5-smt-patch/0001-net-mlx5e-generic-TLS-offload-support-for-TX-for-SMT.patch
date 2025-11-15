@@ -1,0 +1,483 @@
+From 7161b96f69da7184fb84988c9b330d85f8ad1ab2 Mon Sep 17 00:00:00 2001
+From: Tianyi Gao <tianyi.gao@ed.ac.uk>
+Date: Sat, 15 Nov 2025 18:47:48 +0000
+Subject: [PATCH] net/mlx5e: generic TLS offload support for TX for SMT/Homa
+
+Signed-off-by: Tianyi Gao <tianyi.gao@ed.ac.uk>
+---
+ .../net/ethernet/mellanox/mlx5/core/en/selq.c |  32 ++++
+ .../mellanox/mlx5/core/en_accel/en_accel.h    |  17 ++
+ .../mellanox/mlx5/core/en_accel/ktls.c        |  56 +++++-
+ .../mellanox/mlx5/core/en_accel/ktls.h        |   3 +
+ .../mellanox/mlx5/core/en_accel/ktls_tx.c     | 165 +++++++++++++++++-
+ .../mellanox/mlx5/core/en_accel/ktls_txrx.h   |   3 +
+ .../mellanox/mlx5/core/en_accel/ktls_utils.h  |   5 +
+ .../net/ethernet/mellanox/mlx5/core/en_tx.c   |  22 ++-
+ 8 files changed, 295 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en/selq.c b/drivers/net/ethernet/mellanox/mlx5/core/en/selq.c
+index f675b1926340..26311b4a0eaa 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en/selq.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en/selq.c
+@@ -188,6 +188,33 @@ static int mlx5e_select_htb_queue(struct mlx5e_priv *priv, struct sk_buff *skb,
+ 	return mlx5e_htb_get_txq_by_classid(priv->htb, classid);
+ }
+ 
++static inline int mlx5e_select_queue_homa(struct net_device *dev, struct sk_buff *skb,
++		       struct net_device *sb_dev) {
++	u8 type;
++	void *priv_tx;
++	int txq_ix = -1;
++
++	if (skb->sk == NULL)
++		goto out;
++
++	if (skb->sk->sk_protocol != 0xFD)
++		goto out;
++
++	type = skb_transport_header(skb)[sizeof(__be16) * 2 + sizeof(__be32) * 2 + sizeof(__u8)];
++	if (type != 0x10)
++		goto out;
++
++	priv_tx = *((void **)(skb->cb + sizeof(skb->cb) - sizeof(void *)));
++	if (!priv_tx)
++		goto out;
++
++	txq_ix = skb_get_queue_mapping(skb);
++	// txq_ix = ((u64) priv_tx) % dev->real_num_tx_queues;
++
++out:
++	return txq_ix;
++}
++
+ u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
+ 		       struct net_device *sb_dev)
+ {
+@@ -207,6 +234,11 @@ u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
+ 	if (likely(!selq->is_special_queues)) {
+ 		/* No special queues, netdev_pick_tx returns one of the regular ones. */
+ 
++		txq_ix = mlx5e_select_queue_homa(dev, skb, sb_dev);
++		if (txq_ix != -1) {
++			return txq_ix;
++		}
++
+ 		txq_ix = netdev_pick_tx(dev, skb, NULL);
+ 
+ 		if (selq->num_tcs <= 1)
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/en_accel.h b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/en_accel.h
+index 07187028f0d3..67d7f23695aa 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/en_accel.h
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/en_accel.h
+@@ -115,6 +115,22 @@ struct mlx5e_accel_tx_state {
+ #endif
+ };
+ 
++static inline bool mlx5e_accel_tx_begin_homa(struct net_device *dev,
++					struct mlx5e_txqsq *sq,
++					struct sk_buff *skb,
++					struct mlx5e_accel_tx_state *state)
++{
++	#ifdef CONFIG_MLX5_EN_TLS
++	/* May send SKBs and WQEs. */
++	// if (mlx5e_ktls_skb_offloaded(skb))
++		if (unlikely(!mlx5e_ktls_handle_tx_skb_homa(dev, sq, skb,
++						&state->tls)))
++			return false;
++	#endif
++
++	return true;
++}
++
+ static inline bool mlx5e_accel_tx_begin(struct net_device *dev,
+ 					struct mlx5e_txqsq *sq,
+ 					struct sk_buff *skb,
+@@ -189,6 +205,7 @@ static inline void mlx5e_accel_tx_finish(struct mlx5e_txqsq *sq,
+ 					 struct mlx5e_accel_tx_state *state,
+ 					 struct mlx5_wqe_inline_seg *inlseg)
+ {
++
+ #ifdef CONFIG_MLX5_EN_TLS
+ 	mlx5e_ktls_handle_tx_wqe(&wqe->ctrl, &state->tls);
+ #endif
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls.c b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls.c
+index da2184c94203..eab5c89558d2 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls.c
+@@ -45,6 +45,40 @@ void mlx5_ktls_destroy_key(struct mlx5_core_dev *mdev, u32 key_id)
+ 	mlx5_destroy_encryption_key(mdev, key_id);
+ }
+ 
++struct homals_tls_add_hack {
++	struct tls_crypto_info *crypto_info;
++	void **driver_state;
++};
++
++static int mlx5e_ktls_add_homa(struct net_device *netdev, struct sock *sk,
++			  enum tls_offload_ctx_dir direction,
++			  struct homals_tls_add_hack *tls_add_hack,
++			  u32 start_offload_tcp_sn)
++{
++	struct mlx5e_priv *priv = netdev_priv(netdev);
++	struct mlx5_core_dev *mdev = priv->mdev;
++	int err;
++
++	homa_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
++	homa_mlx5_core_info(priv->mdev, "%s tls_add_hack %px tls_add_hack->crypto_info %px tls_add_hack->driver_state %px \n",
++		__func__, tls_add_hack, tls_add_hack->crypto_info, tls_add_hack->driver_state);
++	homa_mlx5_core_info(priv->mdev, "%s crypto_info->version %X crypto_info->cipher_type %X\n",
++		__func__, tls_add_hack->crypto_info->version, tls_add_hack->crypto_info->cipher_type);
++
++	if (!mlx5e_ktls_type_check(mdev, tls_add_hack->crypto_info))
++		return -EOPNOTSUPP;
++
++	if (direction == TLS_OFFLOAD_CTX_DIR_TX)
++		err = mlx5e_ktls_add_tx_homa(netdev, sk,
++			tls_add_hack->crypto_info,
++			tls_add_hack->driver_state,
++			start_offload_tcp_sn);
++	else
++		return -EOPNOTSUPP;
++
++	return err;
++}
++
+ static int mlx5e_ktls_add(struct net_device *netdev, struct sock *sk,
+ 			  enum tls_offload_ctx_dir direction,
+ 			  struct tls_crypto_info *crypto_info,
+@@ -54,6 +88,12 @@ static int mlx5e_ktls_add(struct net_device *netdev, struct sock *sk,
+ 	struct mlx5_core_dev *mdev = priv->mdev;
+ 	int err;
+ 
++	homa_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
++
++	// HOMA
++	if (sk->sk_protocol == 0xFD)
++		return mlx5e_ktls_add_homa(netdev, sk, direction, (struct homals_tls_add_hack *)crypto_info, start_offload_tcp_sn);
++
+ 	if (!mlx5e_ktls_type_check(mdev, crypto_info))
+ 		return -EOPNOTSUPP;
+ 
+@@ -65,14 +105,28 @@ static int mlx5e_ktls_add(struct net_device *netdev, struct sock *sk,
+ 	return err;
+ }
+ 
++enum ktls_del_homals_offload_ctx_dir {
++	TCPTLS_OFFLOAD_CTX_DIR_RX,
++	TCPTLS_OFFLOAD_CTX_DIR_TX,
++	HOMALS_OFFLOAD_CTX_DIR_RX,
++	HOMALS_OFFLOAD_CTX_DIR_TX,
++};
++
+ static void mlx5e_ktls_del(struct net_device *netdev,
+ 			   struct tls_context *tls_ctx,
+ 			   enum tls_offload_ctx_dir direction)
+ {
++	enum ktls_del_homals_offload_ctx_dir direction_homa =
++		(enum ktls_del_homals_offload_ctx_dir) direction;
++
+ 	if (direction == TLS_OFFLOAD_CTX_DIR_TX)
+ 		mlx5e_ktls_del_tx(netdev, tls_ctx);
+-	else
++
++	if (direction == TLS_OFFLOAD_CTX_DIR_RX)
+ 		mlx5e_ktls_del_rx(netdev, tls_ctx);
++
++	if (direction_homa == HOMALS_OFFLOAD_CTX_DIR_TX)
++		mlx5e_ktls_del_tx_homa(netdev, (void *)tls_ctx);
+ }
+ 
+ static int mlx5e_ktls_resync(struct net_device *netdev,
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls.h b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls.h
+index 1c35045e41fb..654c82a01a0d 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls.h
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls.h
+@@ -8,6 +8,9 @@
+ #include <net/tls.h>
+ #include "en.h"
+ 
++// #define homa_mlx5_core_info mlx5_core_info
++#define homa_mlx5_core_info(fmt, arg...) {}
++
+ #ifdef CONFIG_MLX5_EN_TLS
+ int mlx5_ktls_create_key(struct mlx5_core_dev *mdev,
+ 			 struct tls_crypto_info *crypto_info,
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_tx.c b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_tx.c
+index 78072bf93f3f..c5f9fc050c9c 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_tx.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_tx.c
+@@ -5,6 +5,8 @@
+ #include "en_accel/ktls_txrx.h"
+ #include "en_accel/ktls_utils.h"
+ 
++// static DEFINE_SPINLOCK(homa_resync_lock);
++
+ struct mlx5e_dump_wqe {
+ 	struct mlx5_wqe_ctrl_seg ctrl;
+ 	struct mlx5_wqe_data_seg data;
+@@ -450,6 +452,59 @@ static struct mlx5e_ktls_offload_context_tx *pool_pop(struct mlx5e_tls_tx_pool *
+ 
+ /* End of pool API */
+ 
++int mlx5e_ktls_add_tx_homa(struct net_device *netdev, struct sock *sk,
++			   struct tls_crypto_info *crypto_info,
++			   void **driver_state_void,
++			   u32 start_offload_tcp_sn)
++{
++	struct mlx5e_ktls_offload_context_tx *priv_tx;
++	struct mlx5e_tls_tx_pool *pool;
++	struct mlx5e_priv *priv;
++	struct mlx5e_ktls_offload_context_tx **driver_state =
++		(struct mlx5e_ktls_offload_context_tx **)driver_state_void;
++	int err;
++
++	priv = netdev_priv(netdev);
++	pool = priv->tls->tx_pool;
++	priv_tx = pool_pop(pool);
++	if (IS_ERR(priv_tx))
++		return PTR_ERR(priv_tx);
++
++	homa_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
++
++	err = mlx5_ktls_create_key(pool->mdev, crypto_info, &priv_tx->key_id);
++	if (err)
++		goto err_create_key;
++
++	priv_tx->expected_seq = start_offload_tcp_sn;
++	switch (crypto_info->cipher_type) {
++	case TLS_CIPHER_AES_GCM_128:
++		priv_tx->crypto_info.crypto_info_128 =
++			*(struct tls12_crypto_info_aes_gcm_128 *)crypto_info;
++		break;
++	case TLS_CIPHER_AES_GCM_256:
++		priv_tx->crypto_info.crypto_info_256 =
++			*(struct tls12_crypto_info_aes_gcm_256 *)crypto_info;
++		break;
++	default:
++		WARN_ONCE(1, "Unsupported cipher type %u\n",
++			  crypto_info->cipher_type);
++		return -EOPNOTSUPP;
++	}
++
++	homa_mlx5_core_info(priv->mdev, "%s priv_tx %px\n", __func__, priv_tx);
++
++	*driver_state = priv_tx;
++	priv_tx->ctx_post_pending = true;
++	atomic64_inc(&priv_tx->sw_stats->tx_tls_ctx);
++
++	return 0;
++
++err_create_key:
++	pool_push(pool, priv_tx);
++	return err;
++}
++
+ int mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
+ 		      struct tls_crypto_info *crypto_info, u32 start_offload_tcp_sn)
+ {
+@@ -477,10 +532,6 @@ int mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
+ 		priv_tx->crypto_info.crypto_info_128 =
+ 			*(struct tls12_crypto_info_aes_gcm_128 *)crypto_info;
+ 		break;
+-	case TLS_CIPHER_AES_GCM_256:
+-		priv_tx->crypto_info.crypto_info_256 =
+-			*(struct tls12_crypto_info_aes_gcm_256 *)crypto_info;
+-		break;
+ 	default:
+ 		WARN_ONCE(1, "Unsupported cipher type %u\n",
+ 			  crypto_info->cipher_type);
+@@ -500,6 +551,18 @@ int mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
+ 	return err;
+ }
+ 
++void mlx5e_ktls_del_tx_homa(struct net_device *netdev, void *priv_tx_void)
++{
++	struct mlx5e_ktls_offload_context_tx *priv_tx =
++		(struct mlx5e_ktls_offload_context_tx *)priv_tx_void;
++	struct mlx5e_priv *priv = netdev_priv(netdev);
++	struct mlx5e_tls_tx_pool *pool = priv->tls->tx_pool;
++
++	atomic64_inc(&priv_tx->sw_stats->tx_tls_del);
++	mlx5_ktls_destroy_key(priv_tx->mdev, priv_tx->key_id);
++	pool_push(pool, priv_tx);
++}
++
+ void mlx5e_ktls_del_tx(struct net_device *netdev, struct tls_context *tls_ctx)
+ {
+ 	struct mlx5e_ktls_offload_context_tx *priv_tx;
+@@ -818,6 +881,100 @@ mlx5e_ktls_tx_handle_ooo(struct mlx5e_ktls_offload_context_tx *priv_tx,
+ 	return MLX5E_KTLS_SYNC_FAIL;
+ }
+ 
++static inline void homals_hexdump(struct mlx5_core_dev *mdev, const char *title, unsigned char *buf,
++			   unsigned int len)
++{
++	char line[3*16+1]; // 16 bytes with space in Hex
++	int i = 0;
++	homa_mlx5_core_info(mdev, "%s\n", title);
++	i = 0;
++	while (len--) {
++		sprintf(&line[3*i], "%02x ", *buf++);
++		i += 1;
++		if (i == 16) {
++			homa_mlx5_core_info(mdev, "%s\n", line);
++			i = 0;
++		}
++	}
++	if (i != 0)
++		homa_mlx5_core_info(mdev, "%s", line);
++}
++
++
++bool mlx5e_ktls_handle_tx_skb_homa(struct net_device *netdev, struct mlx5e_txqsq *sq,
++			      struct sk_buff *skb,
++			      struct mlx5e_accel_tx_tls_state *state)
++{
++	struct mlx5e_ktls_offload_context_tx *priv_tx;
++	struct mlx5e_sq_stats *stats = sq->stats;
++	//unsigned long homa_resync_lock_flags;
++	//struct net_device *tls_netdev;
++	int datalen;
++	u8 *skb_rec_seq;
++	u8 type;
++	u64 skb_rec_seq_sn; 
++	
++	type = skb_transport_header(skb)[sizeof(__be16) * 2 + sizeof(__be32) * 2 + sizeof(__u8)];
++	if (type != 0x10)
++		return true;
++
++	priv_tx = *((void **)(skb->cb + sizeof(skb->cb) - sizeof(void *)));
++	if (!priv_tx)
++		return true;
++
++	homa_mlx5_core_info(priv_tx->mdev, "mlx5e_accel_tx_begin_homa "
++	"skb->len %d skb_tcp_all_headers(skb) %d", skb->len, skb_tcp_all_headers(skb));
++
++	datalen = skb->len - skb_tcp_all_headers(skb);
++	if (!datalen)
++		return true;
++
++	mlx5e_tx_mpwqe_ensure_complete(sq);
++
++	// TODO: Ignore NiC mismatch check between route and tls context
++	// tls_netdev = rcu_dereference_bh(tls_ctx->netdev);
++	// /* Don't WARN on NULL: if tls_device_down is running in parallel,
++	//  * netdev might become NULL, even if tls_is_sk_tx_device_offloaded was
++	//  * true. Rather continue processing this packet.
++	//  */
++	// if (WARN_ON_ONCE(tls_netdev && tls_netdev != netdev))
++	// 	goto err_out;
++
++	// Homa packets on tx don't have frags for now
++	// skb_linearize(skb);
++
++	skb_rec_seq = skb->data + skb_tcp_all_headers(skb) + 5;
++
++	// spin_lock_irqsave(&homa_resync_lock, homa_resync_lock_flags);
++
++	if (unlikely(mlx5e_ktls_tx_offload_test_and_clear_pending(priv_tx)))
++		mlx5e_ktls_tx_post_param_wqes(sq, priv_tx, false, false);
++
++	skb_rec_seq_sn = be64_to_cpu(*(__be64 *)skb_rec_seq);
++
++	//mlx5_core_info(priv_tx->mdev, "%s expected_seq %d skb_rec_req_sn %lld queue %d pid %d comm %s\n",
++	//	__func__, priv_tx->expected_seq, skb_rec_seq_sn, skb_get_queue_mapping(skb), current->pid, current->comm);
++
++	if (likely((u64)priv_tx->expected_seq != skb_rec_seq_sn)) {
++		tx_post_resync_params(sq, priv_tx, skb_rec_seq_sn);
++	}
++        priv_tx->expected_seq = skb_rec_seq_sn + 1;
++
++	// spin_unlock_irqrestore(&homa_resync_lock, homa_resync_lock_flags);
++
++	state->tls_tisn = priv_tx->tisn;
++
++	stats->tls_encrypted_packets += skb_is_gso(skb) ? skb_shinfo(skb)->gso_segs : 1;
++	stats->tls_encrypted_bytes   += datalen;
++
++// out:
++	return true;
++
++// err_out:
++// 	dev_kfree_skb_any(skb);
++// 	return false;
++}
++
+ bool mlx5e_ktls_handle_tx_skb(struct net_device *netdev, struct mlx5e_txqsq *sq,
+ 			      struct sk_buff *skb,
+ 			      struct mlx5e_accel_tx_tls_state *state)
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_txrx.h b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_txrx.h
+index 2dd78dd4ad65..7527a9723d9f 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_txrx.h
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_txrx.h
+@@ -16,6 +16,9 @@ struct mlx5e_accel_tx_tls_state {
+ 
+ u16 mlx5e_ktls_get_stop_room(struct mlx5_core_dev *mdev, struct mlx5e_params *params);
+ 
++bool mlx5e_ktls_handle_tx_skb_homa(struct net_device *netdev, struct mlx5e_txqsq *sq,
++			      struct sk_buff *skb,
++			      struct mlx5e_accel_tx_tls_state *state);
+ bool mlx5e_ktls_handle_tx_skb(struct net_device *netdev, struct mlx5e_txqsq *sq,
+ 			      struct sk_buff *skb,
+ 			      struct mlx5e_accel_tx_tls_state *state);
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_utils.h b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_utils.h
+index 3d79cd379890..c3e085c8f9fd 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_utils.h
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_accel/ktls_utils.h
+@@ -19,8 +19,13 @@ enum {
+ 	MLX5E_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_SEARCHING = 2,
+ };
+ 
++int mlx5e_ktls_add_tx_homa(struct net_device *netdev, struct sock *sk,
++			   struct tls_crypto_info *crypto_info,
++			   void **driver_state_void,
++			   u32 start_offload_tcp_sn);
+ int mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
+ 		      struct tls_crypto_info *crypto_info, u32 start_offload_tcp_sn);
++void mlx5e_ktls_del_tx_homa(struct net_device *netdev, void *priv_tx_void);
+ void mlx5e_ktls_del_tx(struct net_device *netdev, struct tls_context *tls_ctx);
+ int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
+ 		      struct tls_crypto_info *crypto_info, u32 start_offload_tcp_sn);
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_tx.c b/drivers/net/ethernet/mellanox/mlx5/core/en_tx.c
+index f7897ddb29c5..e4cd54d9c210 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_tx.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_tx.c
+@@ -281,7 +281,15 @@ static void mlx5e_sq_xmit_prepare(struct mlx5e_txqsq *sq, struct sk_buff *skb,
+ 		stats->packets += skb_shinfo(skb)->gso_segs;
+ 	} else {
+ 		u8 mode = mlx5e_tx_wqe_inline_mode(sq, skb, accel);
+-		u16 ihs = mlx5e_calc_min_inline(mode, skb);
++		u16 ihs;
++
++#ifdef CONFIG_MLX5_EN_TLS
++		if (accel && accel->tls.tls_tisn &&
++		    mode == MLX5_INLINE_MODE_TCP_UDP)
++			ihs = skb_transport_offset(skb) + tcp_hdrlen(skb);
++		else
++#endif
++			ihs = mlx5e_calc_min_inline(mode, skb);
+ 
+ 		*attr = (struct mlx5e_tx_attr) {
+ 			.opcode    = MLX5_OPCODE_SEND,
+@@ -690,8 +698,16 @@ netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev)
+ 	}
+ 
+ 	/* May send SKBs and WQEs. */
+-	if (unlikely(!mlx5e_accel_tx_begin(dev, sq, skb, &accel)))
+-		return NETDEV_TX_OK;
++	if (skb->sk != NULL && skb->sk->sk_protocol == 0xFD) {
++		// mlx5_core_info(priv->mdev, "%s  skb->sk->sk_protocol %d\n",
++		// 	__func__, skb->sk->sk_protocol);
++		// mlx5_core_info(priv->mdev, "%s call mlx5e_accel_tx_begin_homa\n", __func__);
++		if (unlikely(!mlx5e_accel_tx_begin_homa(dev, sq, skb, &accel)))
++			return NETDEV_TX_OK;
++	} else {
++		if (unlikely(!mlx5e_accel_tx_begin(dev, sq, skb, &accel)))
++			return NETDEV_TX_OK;
++	}
+ 
+ 	mlx5e_sq_xmit_prepare(sq, skb, &accel, &attr);
+ 
+-- 
+2.34.1
+

@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Prepare a host for SMT/Homa unloaded microbenchmarks.
+# Usage: sudo ./configure_unloaded_smt [-i IFNAME] [-k KERNEL_SRC] [-m MODE]
+
+if [[ $EUID -ne 0 ]]; then
+  echo "[!] This script must be run as root" >&2
+  exit 1
+fi
+
+script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+smt_root="$(cd -- "${script_dir}/../.." && pwd)"
+
+: "${IFNAME:=}"
+: "${KERNEL_SRC:=}"
+: "${MODE:=}"
+: "${IPADDR:=}"
+
+usage() {
+  cat <<'EOF'
+Usage: sudo ./configure_unloaded_smt [-i IFNAME] [-k KERNEL_SRC] [-m MODE]
+  -i IFNAME      NIC interface name (e.g., ens1f1np1). Will prompt if unset.
+  -k KERNEL_SRC  Kernel source tree path for mlx5 reload (e.g., /usr/src/linux-source-6.2.0/linux-source-6.2.0). Will prompt if unset.
+  -a IPADDR      IP address (CIDR) to assign to IFNAME after reload (e.g., 10.0.0.1/24). Will prompt if unset.
+  -m MODE        One of: tcp, ktls-sw, ktls-hw, homa, smt-sw, smt-hw. Will prompt if unset.
+  -h             Show this help and exit.
+EOF
+  exit 0
+}
+
+while getopts ":i:k:a:m:h" opt; do
+  case "$opt" in
+    i) IFNAME="$OPTARG" ;;
+    k) KERNEL_SRC="$OPTARG" ;;
+    a) IPADDR="$OPTARG" ;;
+    m) MODE="$OPTARG" ;;
+    h) usage ;;
+    *) usage ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [[ $# -ne 0 ]]; then
+  echo "[!] Unexpected arguments: $*" >&2
+  usage
+fi
+
+if [[ -z "$IFNAME" ]]; then
+  read -rp "Enter NIC interface name (e.g., ens1f1np1): " IFNAME
+fi
+if [[ -z "$IFNAME" ]]; then
+  echo "[!] Interface name is required" >&2
+  usage
+fi
+
+if [[ -z "$MODE" ]]; then
+  read -rp "Enter mode (tcp|ktls-sw|ktls-hw|homa|smt-sw|smt-hw): " MODE
+fi
+case "$MODE" in
+  tcp|ktls-sw|ktls-hw|homa|smt-sw|smt-hw) ;;
+  *) echo "[!] Invalid mode: $MODE" >&2; usage ;;
+esac
+
+requires_kernel_src=0
+case "$MODE" in
+  smt-hw) requires_kernel_src=1 ;;
+esac
+
+if [[ $requires_kernel_src -eq 1 ]]; then
+  if [[ -z "$KERNEL_SRC" ]]; then
+    read -rp "Enter kernel source path for mlx5 reload: " KERNEL_SRC
+  fi
+  if [[ -z "$KERNEL_SRC" ]]; then
+    echo "[!] KERNEL_SRC is required" >&2
+    usage
+  fi
+fi
+
+if [[ -z "$IPADDR" ]]; then
+  read -rp "Enter IP address (CIDR) to assign to ${IFNAME} (e.g., 10.0.0.1/24): " IPADDR
+fi
+if [[ -z "$IPADDR" ]]; then
+  echo "[!] IP address is required" >&2
+  usage
+fi
+
+echo "[+] smt_root=${smt_root}"
+echo "[+] IFNAME=${IFNAME}"
+echo "[+] KERNEL_SRC=${KERNEL_SRC}"
+echo "[+] IPADDR=${IPADDR}"
+echo "[+] MODE=${MODE}"
+echo "--------------------------------------------------"
+echo "sudo ${BASH_SOURCE[0]} -i ${IFNAME} -k ${KERNEL_SRC} -a ${IPADDR} -m ${MODE}"
+echo "--------------------------------------------------"
+
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+  echo "[+] Reloading smt/homa"
+  rmmod smt 2>/dev/null || rmmod homa 2>/dev/null || true
+  insmod "${smt_root}/module/smt.ko"
+  lsmod | grep smt || true
+fi
+
+if [[ $requires_kernel_src -eq 1 ]]; then
+  echo "[+] Reloading mlx5_core from source (mlx5-smt-patch) for smt-hw"
+  "${smt_root}/mlx5-smt-patch/reload.sh" "$KERNEL_SRC"
+else
+  echo "[+] Reloading mainline mlx5_core via modprobe"
+  "${smt_root}/mlx5-smt-patch/reload.sh" --modprobe
+fi
+
+echo "[+] Waiting 3s for ${IFNAME} to settle after mlx5 reload"
+sleep 3
+
+echo "[+] Setting IP ${IPADDR} on ${IFNAME}"
+ip addr replace "$IPADDR" dev "$IFNAME"
+
+echo "[+] Setting CPU governor to performance and enable turbo"
+cpupower frequency-set -g performance
+echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo || echo 1 > /sys/devices/system/cpu/cpufreq/boost
+
+echo "[+] Setting NIC coalesce on ${IFNAME}"
+ethtool -C "$IFNAME" adaptive-rx off rx-usecs 5 rx-frames 1
+
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+  echo "[+] Applying Homa sysctls"
+  sysctl /net/homa/link_mbps=100000
+  sysctl /net/homa/max_nic_queue_ns=2000
+  sysctl /net/homa/unsched_bytes=60000
+  sysctl /net/homa/max_incoming=480000
+  sysctl /net/homa/num_priorities=8
+  sysctl /net/homa/max_gso_size=10000
+  sysctl net.homa.smt_hardware_interface="$IFNAME"
+fi
+
+echo "[+] Setting IRQ affinity policy (allnuma) on ${IFNAME} (pin each NIC IRQ to each core)"
+"${smt_root}/bench/util/config_queues" -i "$IFNAME" -m allnuma
+
+if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" || "$MODE" == "ktls-hw" ]]; then
+  echo "[+] Disable RPS on ${IFNAME}"
+  "${smt_root}/bench/util/config_rps" no_rps "$IFNAME"
+else
+  echo "[+] Enable RPS on ${IFNAME}"
+  "${smt_root}/bench/util/config_rps" "$IFNAME"
+fi
+
+case "$MODE" in
+  ktls-hw|smt-hw)
+    echo "[+] Enable NIC TLS TX offload on ${IFNAME}"
+    ethtool -K "$IFNAME" tls-hw-tx-offload on || true
+    ;;
+  ktls-sw|smt-sw)
+    echo "[+] Disable NIC TLS TX offload on ${IFNAME}"
+    ethtool -K "$IFNAME" tls-hw-tx-offload off || true
+    ;;
+esac
+
+echo "[+] Done. Ready to run bench/unloaded binaries."
