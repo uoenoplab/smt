@@ -214,7 +214,7 @@ multiple data points.
 
 ### RSS
 
-Homa lacks RSS support, as [eTran](https://minlanyu.seas.harvard.edu/writeup/nsdi25-etran.pdf) paper also stated in D.2. For SMT/SDP loaded runs, use two IPs on the experiment NIC to multi-home flows; `bench/util/config_loaded` now accepts `-a <ip1>` and `-b <ip2>` to set them up. We are trying to find a better workload;
+Homa lacks RSS support, as [eTran](https://minlanyu.seas.harvard.edu/writeup/nsdi25-etran.pdf) paper also stated in D.2. For SMT/SDP loaded runs, use two IPs on the experiment NIC to multi-home flows; `bench/util/config_loaded` now accepts `-a <ip1>` and `-b <ip2>` to set them up. We are trying to find a better workaround;
 
 ### TLS offload interface `sysctl`
 
