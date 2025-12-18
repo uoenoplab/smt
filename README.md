@@ -10,7 +10,7 @@ However, simply stacking TLS on top of a message-based transport breaks key prop
 2. preserves Homa’s socket-level message abstraction, host-stack parallelism and data center congetsion control;
 3. remains compatible with existing commodity TLS/TCP hardware offloads (e.g., NVIDIA ConnectX-6/7 kTLS AO);
 
-Our [S&P'26 paper](https://tianyigao.net/assets/pdf/smt-oakland26.pdf) “Designing Transport-Level Encryption for Datacenter Networks” describes the design and evaluation of SMT in detail.
+Our [S&P'26 paper](smt-oakland26.pdf) “Designing Transport-Level Encryption for Datacenter Networks” describes the design and evaluation of SMT in detail.
 
 ## Directory Overview
 
