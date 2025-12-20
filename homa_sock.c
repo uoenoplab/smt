@@ -12,6 +12,8 @@
 #include "homa_hijack.h"
 #endif /* See strip.py */
 
+#include "smt_plumbing.h"
+
 /**
  * homa_socktab_init() - Constructor for homa_socktabs.
  * @socktab:  The object to initialize; previous contents are discarded.
@@ -272,8 +274,14 @@ int homa_sock_init(struct homa_sock *hsk)
 	}
 	result = homa_sock_link(hsk, hnet->prev_default_port);
 	spin_unlock_bh(&socktab->write_lock);
-	if (result == 0)
-		return result;
+	if (result != 0)
+		goto error;
+#ifdef CONFIG_SMT
+	result = smt_sock_init(hsk, homa);
+	if (result)
+		goto error;
+#endif
+	return result;
 
 error:
 	hsk->shutdown = true;
@@ -410,6 +418,10 @@ void homa_sock_destroy(struct sock *sk)
 
 	if (!hsk->homa)
 		return;
+
+#ifdef CONFIG_SMT
+	smt_sock_shutdown(hsk);
+#endif
 
 	tt_record1("Starting to destroy socket %d", hsk->port);
 	while (!list_empty(&hsk->dead_rpcs)) {

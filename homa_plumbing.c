@@ -16,6 +16,10 @@
 #include "homa_qdisc.h"
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
+#include "smt_plumbing.h"
+#endif
+
 /* Identifier for retrieving Homa-specific data for a struct net. */
 unsigned int homa_net_id;
 
@@ -252,6 +256,7 @@ static struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#ifndef CONFIG_SMT
 	{
 		.procname	= "hijack_tcp",
 		.data		= OFFSET(hijack_tcp),
@@ -259,6 +264,7 @@ static struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#endif
 	{
 		.procname	= "link_mbps",
 		.data		= OFFSET(link_mbps),
@@ -632,6 +638,14 @@ int __init homa_load(void)
 	}
 	init_net_ops = true;
 
+#ifdef CONFIG_SMT
+	status = smt_load(homa);
+	if (status != 0) {
+		printk(KERN_ERR "Homa couldn't init homals\n");
+		goto error;
+	}
+#endif
+
 	timer_kthread = kthread_run(homa_timer_main, homa, "homa_timer");
 	if (IS_ERR(timer_kthread)) {
 		status = PTR_ERR(timer_kthread);
@@ -693,6 +707,10 @@ void __exit homa_unload(void)
 	struct homa *homa = &homa_data;
 
 	pr_notice("Homa module unloading\n");
+
+#ifdef CONFIG_SMT
+	smt_unload();
+#endif
 
 #ifndef __STRIP__ /* See strip.py */
 	homa_hijack_end();

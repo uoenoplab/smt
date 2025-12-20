@@ -13,6 +13,9 @@ HOMA_OBJS := homa_devel.o \
 	homa_utils.o \
 	timetrace.o
 
+SMT_OBJS := smt_plumbing.o \
+	smt_utils.o
+
 ifneq ($(__STRIP__),)
 MY_CFLAGS += -D__STRIP__
 else
@@ -42,15 +45,22 @@ LINUX_SRC_DIR ?= ../net-next
 ifneq ($(KERNELRELEASE),)
 
 obj-m += homa.o
-homa-y = $(HOMA_OBJS)
+homa-y = $(HOMA_OBJS) $(SMT_OBJS)
+override SMT_CFLAGS += -DCONFIG_SMT
 
 MY_CFLAGS += -g
-ccflags-y += $(MY_CFLAGS)
+ccflags-y += $(MY_CFLAGS) $(SMT_CFLAGS)
 
 else
 
 all:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) modules
+
+info:
+	$(MAKE) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DSMT_INFO" modules
+
+debug:
+	$(MAKE) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DSMT_DEBUG -fno-reorder-functions" modules
 
 install:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) modules_install
