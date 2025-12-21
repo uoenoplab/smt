@@ -5,6 +5,7 @@
 #ifdef __KERNEL__
 #include <net/tls.h>
 #else
+#include <stdint.h>
 #include <linux/tls.h>
 #endif
 

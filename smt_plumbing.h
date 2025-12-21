@@ -5,12 +5,12 @@
 #include "homa_impl.h"
 #include "homa_rpc.h"
 
-extern int smt_setsockopt(struct homa_sock *hsk, int optname,
-				sockptr_t optval, unsigned int optlen);
+extern int smt_setsockopt(struct sock *sk, int level, int optname,
+		    sockptr_t optval, unsigned int optlen);
 
-int smt_sock_init(struct homa_sock *hsk, struct homa *homa);
+extern int smt_sock_init(struct homa_sock *hsk, struct homa *homa);
 
-void smt_sock_shutdown(struct homa_sock *hsk);
+extern void smt_sock_shutdown(struct homa_sock *hsk);
 
 extern int smt_load(struct homa *homa);
 

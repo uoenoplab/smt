@@ -1064,6 +1064,12 @@ int homa_setsockopt(struct sock *sk, int level, int optname,
 	struct homa_sock *hsk = homa_sk(sk);
 	int ret;
 
+#ifdef CONFIG_SMT
+	ret = smt_setsockopt(sk, level, optname, optval, optlen);
+	if (ret)
+		return ret;
+#endif
+
 	if (level != IPPROTO_HOMA) {
 		hsk->error_msg = "homa_setsockopt invoked with level not IPPROTO_HOMA";
 		return -ENOPROTOOPT;

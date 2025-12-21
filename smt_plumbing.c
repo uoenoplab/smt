@@ -2,10 +2,16 @@
 
 struct kmem_cache *smt_ctx_kmem;
 
-int smt_setsockopt(struct homa_sock *hsk, int optname, sockptr_t optval,
-		      unsigned int optlen)
+int smt_setsockopt(struct sock *sk, int level, int optname,
+		    sockptr_t optval, unsigned int optlen)
 {
+	struct homa_sock *hsk = homa_sk(sk);
 	int rc = 0;
+
+	if (level != SOL_TLS) {
+		hsk->error_msg = "smt_setsockopt invoked with level not SOL_TLS";
+		return 0;
+	}
 
 	switch (optname) {
 	case TLS_TX:
