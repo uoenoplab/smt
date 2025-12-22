@@ -27,23 +27,23 @@ struct smt_info {
 	uint32_t peer_addr;
 	uint16_t peer_port;
 	uint32_t local_addr;
-};
+} __attribute__((packed));
 
 struct smt_aes_gcm_128_info {
 	struct smt_info smt;
 	struct tls12_crypto_info_aes_gcm_128 aes_gcm_128;
-};
+} __attribute__((packed));
 
 struct smt_aes_gcm_256_info {
 	struct smt_info smt;
 	struct tls12_crypto_info_aes_gcm_256 aes_gcm_256;
-};
+} __attribute__((packed));
 
 #ifdef __KERNEL__
 struct smt_tls_info {
 	struct smt_info smt;
 	struct tls_crypto_info tls;
-};
+} __attribute__((packed));
 
 union smt_info_union
 {

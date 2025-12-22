@@ -1,5 +1,7 @@
 #include "smt_impl.h"
 
+struct kmem_cache *smt_ctx_kmem;
+
 #define mix(a, b, c)                                                    \
 do {                                                                    \
         a -= b; a -= c; a ^= (c >> 13);                                 \
@@ -31,6 +33,21 @@ static uint32_t ms_rthash(const uint32_t addr, const uint16_t port)
 	return c;
 }
 #undef mix
+
+int __smt_sock_init(struct homa_sock *hsk, struct homa *homa)
+{
+	int i;
+
+	hsk->smt = kmalloc(sizeof(struct smt_sock), GFP_KERNEL);
+	if (!hsk->smt)
+		return -ENOMEM;
+
+	for (i = 0; i < HOMA_SERVER_RPC_BUCKETS; i++)
+		INIT_HLIST_HEAD(&SMT_SOCK(hsk)->ctx_buckets[i]);
+
+	SMT_SOCK(hsk)->reuse_ctx = NULL;
+	return 0;
+}
 
 static struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 					 const uint32_t peer_addr,
@@ -115,16 +132,16 @@ static int smt_ctx_init(struct homa_sock *hsk,
 	ctx->peer_addr = crypto_info_optval->smt.peer_addr;
 	ctx->peer_port = crypto_info_optval->smt.peer_port;
 
-	smt_pr_devel("%s crypto_info %px", __FUNCTION__, crypto_info);
-	smt_pr_devel("%s crypto_info->info.version 0x%04X \n", __FUNCTION__,
+	smt_pr_devel("%s crypto_info %px", __func__, crypto_info);
+	smt_pr_devel("%s crypto_info->info.version 0x%04X \n", __func__,
 			 crypto_info->info.version);
 	smt_pr_devel("%s crypto_info->info.cipher_type %hu \n",
-			 __FUNCTION__, crypto_info->info.cipher_type);
-	smt_pr_devel("%s alt_crypto_info %px", __FUNCTION__, alt_crypto_info);
+			 __func__, crypto_info->info.cipher_type);
+	smt_pr_devel("%s alt_crypto_info %px", __func__, alt_crypto_info);
 	smt_pr_devel("%s alt_crypto_info->info.version 0x%04X \n",
-			 __FUNCTION__, alt_crypto_info->info.version);
+			 __func__, alt_crypto_info->info.version);
 	smt_pr_devel("%s alt_crypto_info->info.cipher_type %hu \n",
-			 __FUNCTION__, alt_crypto_info->info.cipher_type);
+			 __func__, alt_crypto_info->info.cipher_type);
 
 	hexdump("smt_setsockopt_conf crypto_info->salt ", crypto_info->salt,
 		sizeof(crypto_info->salt));
@@ -134,7 +151,7 @@ static int smt_ctx_init(struct homa_sock *hsk,
 		sizeof(crypto_info->key));
 	hexdump("smt_setsockopt_conf crypto_info->rec_seq ",
 		crypto_info->rec_seq, sizeof(crypto_info->rec_seq));
-	smt_pr_info("%s ctx->addr %X ctx->port %d\n", __FUNCTION__,
+	smt_pr_info("%s ctx->addr %X ctx->port %d\n", __func__,
 		ntohl(ctx->peer_addr), (int) ntohs(ctx->peer_port));
 
 out:
@@ -169,6 +186,15 @@ int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 		rc = -EFAULT;
 		goto out;
 	}
+
+	hexdump("smt_ctx_select received smt_info",
+		(unsigned char *)&crypto_info_optval, optlen);
+
+	// smt_pr_devel("%s crypto_info %px", __FUNCTION__, crypto_info_optval);
+	smt_pr_devel("%s crypto_info->info.version 0x%04X \n", __FUNCTION__,
+			 crypto_info_optval.smt_tls.tls.version);
+	smt_pr_devel("%s crypto_info->info.cipher_type %hu \n",
+			 __FUNCTION__, crypto_info_optval.smt_tls.tls.cipher_type);
 
 	switch (crypto_info_optval.smt_tls.tls.version) {
 	case TLS_1_2_VERSION:

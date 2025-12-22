@@ -641,7 +641,7 @@ int __init homa_load(void)
 #ifdef CONFIG_SMT
 	status = smt_load(homa);
 	if (status != 0) {
-		printk(KERN_ERR "Homa couldn't init homals\n");
+		printk(KERN_ERR "Homa couldn't init smt\n");
 		goto error;
 	}
 #endif
@@ -1065,9 +1065,8 @@ int homa_setsockopt(struct sock *sk, int level, int optname,
 	int ret;
 
 #ifdef CONFIG_SMT
-	ret = smt_setsockopt(sk, level, optname, optval, optlen);
-	if (ret)
-		return ret;
+	if (level == SOL_TLS)
+		return smt_setsockopt(sk, level, optname, optval, optlen);
 #endif
 
 	if (level != IPPROTO_HOMA) {

@@ -37,7 +37,7 @@ static int set_tls_crypto_info(void *crypto_info_send_ptr, void *crypto_info_rea
     if (key_size == 128) {
         struct tls12_crypto_info_aes_gcm_128 *crypto_info_send = (struct tls12_crypto_info_aes_gcm_128 *)crypto_info_send_ptr;
         uint64_t local_seq_be = htobe64(local_sequence_number);
-        crypto_info_send->info.version = TLS_1_3_VERSION ? tls13 : TLS_1_2_VERSION;
+        crypto_info_send->info.version = tls13 ? TLS_1_3_VERSION : TLS_1_2_VERSION;
         crypto_info_send->info.cipher_type = TLS_CIPHER_AES_GCM_128;
         if (tls13) {
             memcpy(crypto_info_send->iv, local_iv + 4, TLS_CIPHER_AES_GCM_128_IV_SIZE);
@@ -49,7 +49,7 @@ static int set_tls_crypto_info(void *crypto_info_send_ptr, void *crypto_info_rea
         memcpy(crypto_info_send->rec_seq, &local_seq_be, TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);
         struct tls12_crypto_info_aes_gcm_128 *crypto_info_read = (struct tls12_crypto_info_aes_gcm_128 *)crypto_info_read_ptr;
         uint64_t remote_seq_be = htobe64(remote_sequence_number);
-        crypto_info_read->info.version = TLS_1_3_VERSION ? tls13 : TLS_1_2_VERSION;
+        crypto_info_read->info.version = tls13 ? TLS_1_3_VERSION : TLS_1_2_VERSION;
         crypto_info_read->info.cipher_type = TLS_CIPHER_AES_GCM_128;
         if (tls13) {
             memcpy(crypto_info_read->iv, remote_iv + 4, TLS_CIPHER_AES_GCM_128_IV_SIZE);
@@ -63,7 +63,7 @@ static int set_tls_crypto_info(void *crypto_info_send_ptr, void *crypto_info_rea
     } else if (key_size == 256) {
         struct tls12_crypto_info_aes_gcm_256 *crypto_info_send = (struct tls12_crypto_info_aes_gcm_256 *)crypto_info_send_ptr;
         uint64_t local_seq_be = htobe64(local_sequence_number);
-        crypto_info_send->info.version = TLS_1_3_VERSION ? tls13 : TLS_1_2_VERSION;
+        crypto_info_send->info.version = tls13 ? TLS_1_3_VERSION : TLS_1_2_VERSION;
         crypto_info_send->info.cipher_type = TLS_CIPHER_AES_GCM_256;
         if (tls13) {
             memcpy(crypto_info_send->iv, local_iv + 4, TLS_CIPHER_AES_GCM_256_IV_SIZE);
@@ -75,7 +75,7 @@ static int set_tls_crypto_info(void *crypto_info_send_ptr, void *crypto_info_rea
         memcpy(crypto_info_send->rec_seq, &local_seq_be, TLS_CIPHER_AES_GCM_256_REC_SEQ_SIZE);
         struct tls12_crypto_info_aes_gcm_256 *crypto_info_read = (struct tls12_crypto_info_aes_gcm_256 *)crypto_info_read_ptr;
         uint64_t remote_seq_be = htobe64(remote_sequence_number);
-        crypto_info_read->info.version = TLS_1_3_VERSION ? tls13 : TLS_1_2_VERSION;
+        crypto_info_read->info.version = tls13 ? TLS_1_3_VERSION : TLS_1_2_VERSION;
         crypto_info_read->info.cipher_type = TLS_CIPHER_AES_GCM_256;
         if (tls13) {
             memcpy(crypto_info_read->iv, remote_iv + 4, TLS_CIPHER_AES_GCM_256_IV_SIZE);
@@ -111,13 +111,13 @@ int smt_aes_gcm_128_setsockopt_hardcodekey_helper(int sockfd, int tls13, uint32_
 
     ret = setsockopt(sockfd, SOL_TLS, TLS_TX, &info_send, sizeof(info_send));
     if (ret < 0) {
-        printf("Couldn't set TLS_TX option on homals: %d %s\n", ret, strerror(errno));
+        printf("Couldn't set TLS_TX option on smt: %d %s\n", ret, strerror(errno));
         return ret;
     }
 
     ret = setsockopt(sockfd, SOL_TLS, TLS_RX, &info_read, sizeof(info_read));
     if (ret < 0) {
-        printf("Couldn't set TLS_RX option values on homals: %d %s\n", ret, strerror(errno));
+        printf("Couldn't set TLS_RX option values on smt: %d %s\n", ret, strerror(errno));
         return ret;
     }
 

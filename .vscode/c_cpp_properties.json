@@ -1,0 +1,61 @@
+{
+    "env": {
+        "LINUX_SRC": "/home/breakertt/repos/net-next/net-next-6.15"
+    },
+    "configurations": [
+        {
+            "name": "HomaModule",
+            "intelliSenseMode": "gcc-x64",
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c11",
+            "defines": [
+                "KBUILD_MODNAME=\"homa\"",
+                "__GNUC__",
+                "__KERNEL__",
+                "__VSCODE__",
+                "CONFIG_SMT",
+                "CONFIG_TLS_DEVICE",
+                "MODULE"
+            ],
+            "includePath": [
+                "${workspaceFolder}",
+                "${LINUX_SRC}/include/",
+                "${LINUX_SRC}/include/uapi",
+                "${LINUX_SRC}/include/generated",
+                "${LINUX_SRC}/arch/x86/include",
+                "${LINUX_SRC}/arch/x86/include/uapi",
+                "${LINUX_SRC}/arch/x86/include/generated"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "${LINUX_SRC}/include",
+                    "${LINUX_SRC}/mm",
+                    "${LINUX_SRC}/fs",
+                    "${LINUX_SRC}/kernel",
+                    "${LINUX_SRC}/net",
+                    "${LINUX_SRC}/crypto"
+                ],
+                "limitSymbolsToIncludedHeaders": true,
+                "databaseFilename": ""
+            }
+        },
+        {
+            "name": "HomaUtil",
+            "intelliSenseMode": "gcc-x64",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "includePath": [
+                "${workspaceFolder}"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}"
+                ],
+                "limitSymbolsToIncludedHeaders": true,
+                "databaseFilename": ""
+            }
+        }
+    ],
+    "version": 4
+}

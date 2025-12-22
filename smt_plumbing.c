@@ -1,6 +1,5 @@
+#include "smt_plumbing.h"
 #include "smt_impl.h"
-
-struct kmem_cache *smt_ctx_kmem;
 
 int smt_setsockopt(struct sock *sk, int level, int optname,
 		    sockptr_t optval, unsigned int optlen)
@@ -8,18 +7,16 @@ int smt_setsockopt(struct sock *sk, int level, int optname,
 	struct homa_sock *hsk = homa_sk(sk);
 	int rc = 0;
 
-	if (level != SOL_TLS) {
-		hsk->error_msg = "smt_setsockopt invoked with level not SOL_TLS";
-		return 0;
-	}
-
 	switch (optname) {
 	case TLS_TX:
 	case TLS_RX:
 		homa_sock_lock(hsk);
-		if (hsk->shutdown) {
-			homa_sock_unlock(hsk);
-			return -ESHUTDOWN;
+		if (!hsk->smt) {
+			rc = __smt_sock_init(hsk, hsk->homa);
+			if (rc) {
+				homa_sock_unlock(hsk);
+				return rc;
+			}
 		}
 		rc = smt_ctx_select(hsk, optval, optlen,
 						  optname == TLS_TX);
@@ -34,16 +31,10 @@ int smt_setsockopt(struct sock *sk, int level, int optname,
 
 int smt_sock_init(struct homa_sock *hsk, struct homa *homa)
 {
-	int result = 0;
-	hsk->smt = kmalloc(sizeof(struct smt_sock), GFP_KERNEL);
-	if (!hsk->smt)
-		return -ENOMEM;
-	int i;
-	for (i = 0; i < HOMA_SERVER_RPC_BUCKETS; i++) {
-		INIT_HLIST_HEAD(&SMT_SOCK(hsk)->ctx_buckets[i]);
-	}
-	SMT_SOCK(hsk)->reuse_ctx = NULL;
-	return result;
+	// Actual SMT socket initialization is performed until smt_setsockopt
+	// with __smt_sock_init
+	hsk->smt = NULL;
+	return 0;
 }
 
 void smt_sock_shutdown(struct homa_sock *hsk)
@@ -51,6 +42,8 @@ void smt_sock_shutdown(struct homa_sock *hsk)
 	int i = 0;
 
 	struct smt_context *ctx = NULL;
+	if (!hsk->smt)
+		return;
 	for (; i < HOMA_SERVER_RPC_BUCKETS; i++) {
 		if (hlist_empty(&SMT_SOCK(hsk)->ctx_buckets[i]))
 			continue;
@@ -63,7 +56,7 @@ void smt_sock_shutdown(struct homa_sock *hsk)
 int smt_load(struct homa *homa)
 {
 	pr_notice("SMT loading\n");
-#ifdef SMT_NOCRYPTO
+#ifdef CONFIG_SMT_NOCRYPTO
 	pr_notice("SMT compiled without actual encrypt/decrypt, only for test\n");
 #endif
 

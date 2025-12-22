@@ -127,9 +127,11 @@ struct smt_sock {
 
 /* smt_utils.c */
 
+extern struct kmem_cache *smt_ctx_kmem;
+
 int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 				  unsigned int optlen, int tx);
 
-extern struct kmem_cache *smt_ctx_kmem;
+int __smt_sock_init(struct homa_sock *hsk, struct homa *homa);
 
 #endif /* _SMT_IMPL_H */

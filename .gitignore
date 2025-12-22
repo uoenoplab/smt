@@ -23,3 +23,17 @@ reports/
 traces/
 users/
 saved_traces/
+
+# Ignore build artifacts
+.*.*.cmd
+.*.d
+.*.S
+*.ko
+*.mod
+*.mod.cmd
+*.mod.c
+Module.symvers
+modules.order
+
+# example bins
+smt-examples/smt_setkey
