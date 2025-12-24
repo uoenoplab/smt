@@ -40,7 +40,7 @@ The instructions below provision a minimal environment for building and running 
 1. Install the 6.2 kernel and headers
    ```
    sudo apt-get install -y \
-     linux-image-unsigned-6.2.0-39-generic \
+     linux-image-6.2.0-39-generic \
      linux-modules-6.2.0-39-generic \
      linux-modules-extra-6.2.0-39-generic \
      linux-headers-6.2.0-39-generic \
@@ -93,7 +93,8 @@ On systems with supported NVIDIA/Mellanox ConnectX-6/7 Crypto NICs, you can appl
 
 1. Install kernel source:
    ```
-   sudo apt-get install -y linux-source-6.2.0
+   sudo apt-get install -y linux-source-6.2.0=6.2.0-39.40~22.04.1
+   sudo apt-mark hold linux-source-6.2.0
    ```
 1. Unpack and prepare for external module builds:
    ```
