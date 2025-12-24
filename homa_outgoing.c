@@ -18,6 +18,11 @@
 #include "homa_stub.h"
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
+#include "smt_plumbing.h"
+#endif
+
+
 /**
  * homa_message_out_init() - Initialize rpc->msgout.
  * @rpc:       RPC whose output message should be initialized. Must be
@@ -70,11 +75,13 @@ void homa_message_out_init(struct homa_rpc *rpc, int length)
  */
 #endif /* See strip.py */
 int homa_fill_data_interleaved(struct homa_rpc *rpc, struct sk_buff *skb,
-			       struct iov_iter *iter)
+			       struct iov_iter *iter,
+			       struct homa_smt_padding_info pad_info)
 	__must_hold(rpc->bucket->lock)
 {
 	struct homa_skb_info *homa_info = homa_get_skb_info(skb);
-	int seg_length = homa_info->seg_length;
+	/* first segment is smaller for TLS header */
+	int seg_length = homa_info->seg_length - pad_info.hdr_len;
 	int bytes_left = homa_info->data_bytes;
 	int offset = homa_info->offset;
 	int err;
@@ -103,6 +110,8 @@ int homa_fill_data_interleaved(struct homa_rpc *rpc, struct sk_buff *skb,
 					      sizeof(seg));
 		if (err != 0)
 			return err;
+
+		seg_length = homa_info->seg_length;
 	}
 	return 0;
 }
@@ -128,22 +137,34 @@ int homa_fill_data_interleaved(struct homa_rpc *rpc, struct sk_buff *skb,
  */
 struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 				       struct iov_iter *iter, int offset,
-				       int length, int max_seg_data)
+				       int length, int max_seg_data,
+				       struct homa_smt_padding_info pad_info)
 	__must_hold(rpc->bucket->lock)
 {
 	struct homa_sock *hsk = rpc->hsk;
 	struct homa_skb_info *homa_info;
 	struct homa_data_hdr *h;
+	struct homa_seg_hdr *h_s;
 	struct sk_buff *skb;
 	int err, gso_size;
 	u64 segs;
+	int smt_length = pad_info.hdr_len + pad_info.trl_len + length;
+	bool trailer_only = false;
 
-	segs = length + max_seg_data - 1;
+#ifdef CONFIG_SMT
+	u8 *smt_h, *smt_t;
+#endif
+
+	segs = smt_length + max_seg_data - 1;
 	do_div(segs, max_seg_data);
+	if (segs * max_seg_data < length) {
+		segs++; // if trailer unable to fit in last segment
+		trailer_only = 1;
+	}
 
 	/* Initialize the overall skb. */
 #ifndef __STRIP__ /* See strip.py */
-	skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr));
+	skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) + pad_info.hdr_len);
 #else /* See strip.py */
 	skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) + length +
 			      (segs - 1) * sizeof(struct homa_seg_hdr));
@@ -156,7 +177,8 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	/* Fill in the Homa header (which will be replicated in every
 	 * network packet by GSO).
 	 */
-	h = (struct homa_data_hdr *)skb_put(skb, sizeof(struct homa_data_hdr));
+	h = (struct homa_data_hdr *)skb_put(skb,
+		sizeof(struct homa_data_hdr) - sizeof(struct homa_seg_hdr));
 	h->common.sport = htons(hsk->port);
 	h->common.dport = htons(rpc->dport);
 	h->common.sequence = htonl(offset);
@@ -170,16 +192,24 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	homa_peer_get_acks(rpc->peer, 1, &h->ack);
 	IF_NO_STRIP(h->cutoff_version = rpc->peer->cutoff_version);
 	h->retransmit = 0;
+	// TODO: smt gso offset etc.
+
+	if (pad_info.hdr_len > 0)
+		smt_h = skb_put(skb, pad_info.hdr_len);
+
+	h_s = (struct homa_seg_hdr *)skb_put(skb, sizeof(struct homa_seg_hdr));
 #ifndef __STRIP__ /* See strip.py */
-	h->seg.offset = htonl(-1);
+	h_s->offset = htonl(-1);
 #else /* See strip.py */
-	h->seg.offset = htonl(offset);
+	h_s->offset = htonl(offset);
 #endif /* See strip.py */
 
 	homa_info = homa_get_skb_info(skb);
 	homa_info->next_skb = NULL;
 	homa_info->wire_bytes = length + segs * (sizeof(struct homa_data_hdr)
-			+  hsk->ip_header_length + HOMA_ETH_OVERHEAD);
+			+ hsk->ip_header_length + HOMA_ETH_OVERHEAD)
+			+ pad_info.hdr_len + pad_info.trl_len
+			- trailer_only * sizeof(struct homa_seg_hdr);
 	homa_info->data_bytes = length;
 	homa_info->seg_length = max_seg_data;
 	homa_info->offset = offset;
@@ -194,10 +224,10 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 		homa_set_doff(skb, sizeof(struct homa_data_hdr)  -
 				sizeof(struct homa_seg_hdr));
 #ifndef __STRIP__ /* See strip.py */
-		h->seg.offset = htonl(offset);
+		h_s->offset = htonl(offset);
 #endif /* See strip.py */
 		gso_size = max_seg_data + sizeof(struct homa_seg_hdr);
-		err = homa_fill_data_interleaved(rpc, skb, iter);
+		err = homa_fill_data_interleaved(rpc, skb, iter, pad_info);
 	} else {
 		gso_size = max_seg_data;
 		err = homa_skb_append_from_iter(hsk->homa, skb, iter, length);
@@ -219,6 +249,21 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 		    (hsk->inet.sk.sk_family == AF_INET6) ? SKB_GSO_TCPV6 :
 		    SKB_GSO_TCPV4;
 	}
+
+#ifdef CONFIG_SMT
+	for (int i=0; i<pad_info.hdr_len; i++) {
+		smt_h[i] = 0xFF;
+	}
+#define MAX_SMT_TRAILER 32
+	u8 smt_t_src[MAX_SMT_TRAILER] = {0};
+	for (int i=0; i<pad_info.trl_len; i++) {
+		smt_t_src[i] = 0xFF;
+	}
+#endif
+	if (pad_info.hdr_len > 0)
+		err = homa_skb_append_to_frag(rpc->hsk->homa, skb, smt_t,
+						pad_info.trl_len);
+
 	return skb;
 
 error:
@@ -260,11 +305,19 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 	int mtu, max_seg_data, max_gso_data;
 	struct sk_buff **last_link;
 	struct dst_entry *dst;
+	struct homa_smt_padding_info pad_info = {.hdr_len = 0, .trl_len = 0};
 	u64 segs_per_gso;
 	/* Bytes of the message that haven't yet been copied into skbs. */
 	int bytes_left;
 	int gso_size;
 	int err;
+
+#ifdef CONFIG_SMT
+	// SMT TODO: check rpc and if it is a SMT rpc, set padding info
+	if (is_smt_rpc(rpc)) {
+		pad_info = smt_get_padding_info();
+	}
+#endif
 
 	if (unlikely(iter->count == 0)) {
 		rpc->hsk->error_msg = "message has length zero";
@@ -293,17 +346,23 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 	 * on whether we're doing TCP hijacking (need more space in TSO packet
 	 * if no hijacking).
 	 */
+#ifndef CONFIG_SMT
 	if (homa_sock_hijacked(rpc->hsk)) {
+		/* Hijacking */
 		segs_per_gso = gso_size - rpc->hsk->ip_header_length
 				- sizeof(struct homa_data_hdr);
 		do_div(segs_per_gso, max_seg_data);
 	} else {
+#endif
+		/* No hijacking */
 		segs_per_gso = gso_size - rpc->hsk->ip_header_length -
 				sizeof(struct homa_data_hdr) +
 				sizeof(struct homa_seg_hdr);
 		do_div(segs_per_gso, max_seg_data +
 				sizeof(struct homa_seg_hdr));
+#ifndef CONFIG_SMT
 	}
+#endif
 #else /* See strip.py */
 	/* Round gso_size down to an even # of mtus. */
 	segs_per_gso = gso_size - rpc->hsk->ip_header_length -
@@ -321,6 +380,8 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 #ifndef __STRIP__ /* See strip.py */
 	rpc->msgout.granted = rpc->msgout.unscheduled;
 #endif /* See strip.py */
+	// Stash pages based on payload length; we ignore padding/seg overhead
+	// here because HOMA_SKB_PAGE_SIZE is 64KB which hedges most msgs
 	homa_skb_stash_pages(rpc->hsk->homa, rpc->msgout.length);
 
 	/* Each iteration of the loop below creates one GSO packet. */
@@ -333,31 +394,33 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 #endif /* See strip.py */
 	last_link = &rpc->msgout.packets;
 	for (bytes_left = rpc->msgout.length; bytes_left > 0; ) {
-		int skb_data_bytes, offset;
+		int skb_msg_data_bytes, offset;
 		struct sk_buff *skb;
 
 		homa_rpc_unlock(rpc);
-		skb_data_bytes = max_gso_data;
+		skb_msg_data_bytes = max_gso_data;
+		// reserve bytes for smt header and trailer
+		skb_msg_data_bytes -= pad_info.hdr_len + pad_info.trl_len;
 		offset = rpc->msgout.length - bytes_left;
 #ifndef __STRIP__ /* See strip.py */
 		if (offset < rpc->msgout.unscheduled &&
-		    (offset + skb_data_bytes) > rpc->msgout.unscheduled) {
+		    (offset + skb_msg_data_bytes) > rpc->msgout.unscheduled) {
 			/* Insert a packet boundary at the unscheduled limit,
 			 * so we don't transmit extra data.
 			 */
-			skb_data_bytes = rpc->msgout.unscheduled - offset;
+			skb_msg_data_bytes = rpc->msgout.unscheduled - offset;
 		}
 #endif /* See strip.py */
-		if (skb_data_bytes > bytes_left)
-			skb_data_bytes = bytes_left;
-		skb = homa_tx_data_pkt_alloc(rpc, iter, offset, skb_data_bytes,
-					     max_seg_data);
+		if (skb_msg_data_bytes > bytes_left)
+			skb_msg_data_bytes = bytes_left;
+		skb = homa_tx_data_pkt_alloc(rpc, iter, offset, skb_msg_data_bytes,
+					     max_seg_data, pad_info);
 		if (IS_ERR(skb)) {
 			err = PTR_ERR(skb);
 			homa_rpc_lock(rpc);
 			goto error;
 		}
-		bytes_left -= skb_data_bytes;
+		bytes_left -= skb_msg_data_bytes;
 
 		homa_rpc_lock(rpc);
 		if (rpc->state == RPC_DEAD) {

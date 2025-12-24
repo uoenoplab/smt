@@ -12,7 +12,9 @@
 #include "homa_hijack.h"
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
 #include "smt_plumbing.h"
+#endif
 
 /**
  * homa_socktab_init() - Constructor for homa_socktabs.

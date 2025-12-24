@@ -1,6 +1,17 @@
 #include "smt_plumbing.h"
 #include "smt_impl.h"
 
+//TODO better name - all I want is just a better name, give me one
+// this is a struct that homa can use to extra basic info about how to reserve padding etc for tx
+inline struct homa_smt_padding_info smt_get_padding_info(void)
+{
+	struct homa_smt_padding_info padding = {
+		.hdr_len = SMT_RECORD_EXTRA_PRE_LENGTH,
+		.trl_len = SMT_RECORD_EXTRA_POST_LENGTH
+	};
+	return padding;
+}
+
 int smt_setsockopt(struct sock *sk, int level, int optname,
 		    sockptr_t optval, unsigned int optlen)
 {
@@ -76,3 +87,10 @@ int smt_unload(void)
 	smt_ctx_kmem = NULL;
 	return 0;
 }
+
+// homa_set_header() {
+// 	// set doff
+// 	// set gso offset
+// 	// revise homa_info->wire_bytes
+// 	// return trailer only or not?
+// }

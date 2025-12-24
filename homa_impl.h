@@ -61,6 +61,8 @@
 #endif /* See strip.py */
 #include "homa_wire.h"
 
+#include "smt_plumbing_impl.h"
+
 #ifdef __UNIT_TEST__
 #include "mock.h"
 #endif /* __UNIT_TEST__ */
@@ -707,7 +709,8 @@ int      homa_err_handler_v6(struct sk_buff *skb,
 			     struct inet6_skb_parm *opt, u8 type,  u8 code,
 			     int offset, __be32 info);
 int      homa_fill_data_interleaved(struct homa_rpc *rpc,
-				    struct sk_buff *skb, struct iov_iter *iter);
+				    struct sk_buff *skb, struct iov_iter *iter,
+				    struct homa_smt_padding_info pad_info);
 struct homa_gap *homa_gap_alloc(struct list_head *next, int start, int end);
 int      homa_getsockopt(struct sock *sk, int level, int optname,
 			 char __user *optval, int __user *optlen);
@@ -748,7 +751,8 @@ void     homa_timer_check_rpc(struct homa_rpc *rpc);
 int      homa_timer_main(void *transport);
 struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 				       struct iov_iter *iter, int offset,
-				       int length, int max_seg_data);
+				       int length, int max_seg_data,
+					struct homa_smt_padding_info pad_info);
 void     homa_unhash(struct sock *sk);
 void     homa_rpc_unknown_pkt(struct sk_buff *skb, struct homa_rpc *rpc);
 void     homa_unload(void);
