@@ -1,0 +1,213 @@
+#!/usr/bin/python3
+
+# Copyright (c) 2024 Tianyi Gao, University of Edinburgh
+#
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR(S) DISCLAIM ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL AUTHORS BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+# Copyright (c) 2023 Stanford University
+#
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR(S) DISCLAIM ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL AUTHORS BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+"""
+This script is used to configure CloudLab nodes for running Homa experiments.
+It does things such as (re-)installing Homa, setting Homa configuration
+parameters, and configuring the system in various ways such as setting
+power management parameters and enabling RPS.
+"""
+
+# References:
+# https://blog.cloudflare.com/how-to-achieve-low-latency
+# https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/6/html/performance_tuning_guide/network-rss#network-rss
+# https://docs.nvidia.com/networking/display/mlnxofedv541030/flow+steering
+# https://archive.fosdem.org/2021/schedule/event/network_performance_in_kernel/attachments/slides/4433/export/events/attachments/network_performance_in_kernel/slides/4433/chevallier_network_performance_in_the_linux_kernel.pdf
+
+import fcntl
+import functools
+from glob import glob
+import os
+import re
+import subprocess
+import sys
+import time
+
+# Names for the main network interface and VLAN for this host. Set by
+# get_interfaces
+interface = None
+
+# The total number of physical cores (i.e. distinct values of "core id"
+# in cpuinfo). Filled in by read_cpu_info().
+num_phys_cores = 0
+
+# Contains information from /proc/cpuinfo with one entry for each
+# "processor" in /proc/cpuinfo. The entry is a dictionary with the
+# following entries (same names as in /proc/cpuinfo):
+# processor:    number of this core (hyperthread)
+# core id:      number of the physical core (same for all hyperthreads
+#               on the core)
+# physical id:  number for the socket containing this core
+# This array is filled in by read_cpu_info().
+cpu_info = []
+
+def get_core_mask():
+    """
+    Returns a string describing all the cores (hyperthreads) available
+    on this machine. The string represents a bit mask containing one
+    or more 32-bit hex values: "val,val,...val".
+    """
+    read_cpu_info()
+    mask_words = [0]
+    for cpu in cpu_info:
+        core = cpu["processor"]
+        word = core//32
+        while word >= len(mask_words):
+            mask_words.append(0)
+        mask_words[word] |= 1<<(core & 0x1f)
+    result = ""
+    while len(mask_words) > 0:
+        if len(result) != 0:
+            result += ","
+        result += ("%x" % (mask_words[-1]))
+        mask_words.pop()
+    return result
+
+def read_cpu_info():
+    """
+    Read the file /proc/cpuinfo and store information from it in various
+    global arrays above.
+    """
+    global cpu_info, num_phys_cores
+
+    if len(cpu_info) > 0:
+        return
+    cpu = None
+    cores = {}
+    sockets = {}
+    f = open("/proc/cpuinfo", "r")
+    for line in f:
+        match = re.match('([^\t]*)[\t ]+: (.*)', line)
+        if match:
+            name = match.group(1)
+            value = match.group(2)
+            # print("name '%s' value '%s'" % (name, value))
+            if name == 'processor':
+                cpu = int(value)
+                cpu_info.append({name: int(value)})
+            elif cpu == None:
+                continue
+            if name == "core id":
+                cpu_info[-1][name] = int(value)
+                cores[value] = 1
+            elif name == "physical id":
+                cpu_info[-1][name] = int(value)
+                sockets[value] = 1
+    f.close()
+    num_phys_cores = len(cores)
+    s = "sockets"
+    if len(sockets) == 1:
+        s = "socket"
+    if num_phys_cores == len(cpu_info):
+        print("This node has %d %s, %d cores, no hyperthreading" % (
+                len(sockets), s, num_phys_cores))
+    else:
+        print("This node has %d %s, %d logical cores, %d-way "
+                "hyperthreading" % (len(sockets), s, len(cpu_info),
+                len(cpu_info)/num_phys_cores))
+
+
+def unconfig_rps():
+    """
+    Enable RSS and disable RPS (Receive Packet Steering) and
+    RFS (Receive Flow Steering).
+    """
+
+    mask = get_core_mask()
+
+    # disable RFS
+    subprocess.run(["sudo", "sysctl", "-w",
+            "net.core.rps_sock_flow_entries=0"], check=True)
+    flow_cnt = 0
+    for file in glob("/sys/class/net/%s/queues/rx-*/rps_flow_cnt"
+            % (interface)):
+        subprocess.run(["sudo", "bash", "-c", "echo 0 > %s" % (file)],
+                check=True)
+        flow_cnt += 1
+
+    # disable RPS
+    cpus = 0
+    for file in glob("/sys/class/net/%s/queues/rx-*/rps_cpus" % (interface)):
+        subprocess.run(["sudo", "bash", "-c", "echo 00 > %s" % file],
+                check=True)
+        cpus += 1
+    print("Disabled RFS and RPS: %d rps_flow_cnt files and %d rps_cpus files"
+            % (flow_cnt, cpus))
+
+def config_rps():
+    """
+    Enable RPS (Receive Packet Steering) and RFS (Receive Flow Steering).
+    """
+
+    mask = get_core_mask()
+    subprocess.run(["sudo", "sysctl", "-w",
+            "net.core.rps_sock_flow_entries=32768"], check=True)
+    flow_cnt = 0
+    for file in glob("/sys/class/net/%s/queues/rx-*/rps_flow_cnt"
+            % (interface)):
+        subprocess.run(["sudo", "bash", "-c", "echo 2048 > %s" % (file)],
+                check=True)
+        flow_cnt += 1
+    cpus = 0
+    for file in glob("/sys/class/net/%s/queues/rx-*/rps_cpus" % (interface)):
+        subprocess.run(["sudo", "bash", "-c", "echo %s > %s" % (mask, file)],
+                check=True)
+        cpus += 1
+    print("Configured RPS and RFS: %d rps_flow_cnt files and %d rps_cpus files "
+          "with cpu mask %s"
+            % (flow_cnt, cpus, mask))
+
+if __name__ == "__main__":
+    rps = 1
+
+    if 'no_rps' in sys.argv:
+        rps = 0
+
+    arguments = sys.argv[1:]
+
+    try:
+        arguments.remove('no_rps')
+    except ValueError:
+        pass
+
+    if len(arguments) >= 1:
+        interface = arguments[0]
+    else:
+        print("Please provide interface name")
+        # print usage with optional no_rps
+        print(f"Usage: {sys.argv[0]} [no_rps] <interface>")
+        sys.exit(1)
+
+    print(f"rps: {rps}, interface: {interface}")
+
+    if (rps):
+        config_rps()
+    else:
+        unconfig_rps()

@@ -34,6 +34,3 @@ saved_traces/
 *.mod.c
 Module.symvers
 modules.order
-
-# example bins
-smt-examples/smt_setkey

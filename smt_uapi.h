@@ -5,6 +5,7 @@
 #ifdef __KERNEL__
 #include <net/tls.h>
 #else
+#define _GNU_SOURCE
 #include <stdint.h>
 #include <linux/tls.h>
 #endif

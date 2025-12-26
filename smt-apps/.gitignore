@@ -1,0 +1,7 @@
+# Binaries built in this subtree
+setkey/smt_setkey
+unloaded/simple_client
+unloaded/simple_server
+
+# Object files
+*.o
