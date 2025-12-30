@@ -494,6 +494,10 @@ struct homa_rpc {
 	 * occasionally for testing.
 	 */
 	u64 start_time;
+
+#ifdef CONFIG_SMT
+	void *smt;
+#endif
 };
 
 void     homa_abort_rpcs(struct homa *homa, const struct in6_addr *addr,

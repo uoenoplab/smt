@@ -422,7 +422,7 @@ void homa_sock_destroy(struct sock *sk)
 		return;
 
 #ifdef CONFIG_SMT
-	smt_sock_shutdown(hsk);
+	smt_sock_destroy(hsk);
 #endif
 
 	tt_record1("Starting to destroy socket %d", hsk->port);

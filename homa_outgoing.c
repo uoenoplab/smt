@@ -151,9 +151,7 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	int smt_length = pad_info.hdr_len + pad_info.trl_len + length;
 	bool trailer_only = false;
 
-#ifdef CONFIG_SMT
 	u8 *smt_h, *smt_t;
-#endif
 
 	segs = smt_length + max_seg_data - 1;
 	do_div(segs, max_seg_data);
@@ -251,7 +249,18 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	}
 
 #ifdef CONFIG_SMT
-	for (int i=0; i<pad_info.hdr_len; i++) {
+	smt_h[0] = 0x17;
+	smt_h[1] = 0x03;
+	smt_h[2] = 0x03;
+
+	int smt_h_l = length + pad_info.hdr_len - 5 + pad_info.trl_len
+			+ segs * sizeof(struct homa_seg_hdr)
+			- trailer_only * sizeof(struct homa_seg_hdr);
+
+	smt_h[3] = smt_h_l >> 8;
+	smt_h[3] = smt_h_l & 0xff;
+
+	for (int i=5; i<pad_info.hdr_len; i++) {
 		smt_h[i] = 0xFF;
 	}
 #define MAX_SMT_TRAILER 32
@@ -259,7 +268,9 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	for (int i=0; i<pad_info.trl_len; i++) {
 		smt_t_src[i] = 0xFF;
 	}
+	smt_t = smt_t_src;
 #endif
+
 	if (pad_info.hdr_len > 0)
 		err = homa_skb_append_to_frag(rpc->hsk->homa, skb, smt_t,
 						pad_info.trl_len);

@@ -14,14 +14,20 @@ extern int smt_setsockopt(struct sock *sk, int level, int optname,
 
 extern int smt_sock_init(struct homa_sock *hsk, struct homa *homa);
 
-extern void smt_sock_shutdown(struct homa_sock *hsk);
+extern void smt_sock_destroy(struct homa_sock *hsk);
 
 extern int smt_load(struct homa *homa);
 
 extern int smt_unload(void);
 
 static inline bool is_smt_rpc(struct homa_rpc *rpc) {
-	return true;
+	// return true;
+	return rpc->smt;
 }
+
+extern int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk,
+					  struct homa_rpc *rpc);
+
+extern void smt_rpc_release(struct homa_rpc *rpc);
 
 #endif /* _SMT_PLUMBING_H */

@@ -16,6 +16,8 @@
 #include "homa_stub.h"
 #endif /* See strip.py */
 
+#include "smt_plumbing.h"
+
 /**
  * homa_rpc_alloc_client() - Allocate and initialize a client RPC (one that
  * is used to issue an outgoing request). Doesn't send any packets. Invoked
@@ -88,7 +90,22 @@ struct homa_rpc *homa_rpc_alloc_client(struct homa_sock *hsk,
 	rcu_read_lock();
 	list_add_tail_rcu(&crpc->active_links, &hsk->active_rpcs);
 	rcu_read_unlock();
+#ifdef CONFIG_SMT
+	err = smt_rpc_alloc_client_sock_lock(hsk, crpc);
+	if (err != 0) {
+		homa_sock_unlock(hsk);
+		homa_rpc_unlock(crpc);
+		goto error;
+	}
+#endif
 	homa_sock_unlock(hsk);
+// #ifdef CONFIG_SMT
+// 	err = smt_rpc_alloc_client(hsk, crpc);
+// 	if (err != 0) {
+// 		homa_rpc_unlock(crpc);
+// 		goto error;
+// 	}
+// #endif
 
 	return crpc;
 
@@ -636,6 +653,10 @@ release:
 			rpc = rpcs[i];
 
 			UNIT_LOG("; ", "reaped %llu", rpc->id);
+#ifdef CONFIG_SMT
+			if (is_smt_rpc(rpc))
+				smt_rpc_release(rpc);
+#endif
 			if (rpc->peer) {
 				homa_peer_release(rpc->peer);
 				rpc->peer = NULL;

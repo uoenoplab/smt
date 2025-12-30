@@ -1,8 +1,6 @@
 #include "smt_plumbing.h"
 #include "smt_impl.h"
 
-//TODO better name - all I want is just a better name, give me one
-// this is a struct that homa can use to extra basic info about how to reserve padding etc for tx
 inline struct homa_smt_padding_info smt_get_padding_info(void)
 {
 	struct homa_smt_padding_info padding = {
@@ -48,7 +46,7 @@ int smt_sock_init(struct homa_sock *hsk, struct homa *homa)
 	return 0;
 }
 
-void smt_sock_shutdown(struct homa_sock *hsk)
+void smt_sock_destroy(struct homa_sock *hsk)
 {
 	int i = 0;
 
@@ -59,9 +57,11 @@ void smt_sock_shutdown(struct homa_sock *hsk)
 		if (hlist_empty(&SMT_SOCK(hsk)->ctx_buckets[i]))
 			continue;
 		hlist_for_each_entry(ctx, &SMT_SOCK(hsk)->ctx_buckets[i], hlist) {
-			// smt_ctx_destory(ctx);
+			smt_ctx_destory(ctx);
 		}
 	}
+	kfree(hsk->smt);
+	hsk->smt = NULL;
 }
 
 int smt_load(struct homa *homa)
@@ -76,21 +76,36 @@ int smt_load(struct homa *homa)
 			NULL);
 	if (!smt_ctx_kmem)
 		return -ENOMEM;
+	smt_rpc_ctx_kmem = kmem_cache_create("homa_smt_rpc_ctx",
+			sizeof(struct smt_rpc), 0, SLAB_HWCACHE_ALIGN, NULL);
+	if (!smt_rpc_ctx_kmem)
+		return -ENOMEM;
 
 	return 0;
 }
 
 int smt_unload(void)
 {
+	if (smt_rpc_ctx_kmem)
+		kmem_cache_destroy(smt_rpc_ctx_kmem);
+	smt_rpc_ctx_kmem = NULL;
 	if (smt_ctx_kmem)
 		kmem_cache_destroy(smt_ctx_kmem);
 	smt_ctx_kmem = NULL;
 	return 0;
 }
 
+int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
+{
+	return smt_crpc_ctx_init(hsk, rpc);
+}
+
+void smt_rpc_release(struct homa_rpc *rpc)
+{
+	kmem_cache_free(smt_rpc_ctx_kmem, rpc->smt);
+}
+
+// !!! TODO !!!
 // homa_set_header() {
-// 	// set doff
 // 	// set gso offset
-// 	// revise homa_info->wire_bytes
-// 	// return trailer only or not?
 // }

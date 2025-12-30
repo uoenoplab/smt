@@ -120,18 +120,36 @@ struct smt_context {
 
 struct smt_sock {
 	struct hlist_head ctx_buckets[HOMA_SERVER_RPC_BUCKETS];
-	void *reuse_ctx;
+	struct smt_context *reuse_ctx;
 };
 
 #define SMT_SOCK(hsk) ((struct smt_sock *)(hsk)->smt)
 
+// TODO: rpc free
+struct smt_rpc {
+	struct smt_context *ctx;
+	char smt_rpc_crypto_tx[40];
+	char smt_rpc_crypto_rx[40];
+	char smt_rpc_cb_rx[72];
+};
+
+#define SMT_RPC(rpc) ((struct smt_rpc *)(rpc)->smt)
+
 /* smt_utils.c */
 
 extern struct kmem_cache *smt_ctx_kmem;
+extern struct kmem_cache *smt_rpc_ctx_kmem;
 
 int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 				  unsigned int optlen, int tx);
 
 int __smt_sock_init(struct homa_sock *hsk, struct homa *homa);
+
+static inline void smt_ctx_destory(struct smt_context *ctx)
+{
+	kmem_cache_free(smt_ctx_kmem, ctx);
+}
+
+int smt_crpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc);
 
 #endif /* _SMT_IMPL_H */

@@ -1,38 +1,45 @@
 #include "smt_impl.h"
 
+#include "homa_peer.h"
+
 struct kmem_cache *smt_ctx_kmem;
+struct kmem_cache *smt_rpc_ctx_kmem;
 
-#define mix(a, b, c)                                                    \
-do {                                                                    \
-        a -= b; a -= c; a ^= (c >> 13);                                 \
-        b -= c; b -= a; b ^= (a << 8);                                  \
-        c -= a; c -= b; c ^= (b >> 13);                                 \
-        a -= b; a -= c; a ^= (c >> 12);                                 \
-        b -= c; b -= a; b ^= (a << 16);                                 \
-        c -= a; c -= b; c ^= (b >> 5);                                  \
-        a -= b; a -= c; a ^= (c >> 3);                                  \
-        b -= c; b -= a; b ^= (a << 10);                                 \
-        c -= a; c -= b; c ^= (b >> 15);                                 \
-} while (/*CONSTCOND*/0)
-
-static uint32_t ms_rthash(const uint32_t addr, const uint16_t port)
+static inline uint32_t ms_rthash(const uint32_t addr, const uint16_t port)
 {
-	uint32_t a = 0x9e3779b9, b = 0x9e3779b9, c = 0; // hask key
-	uint8_t *p;
+	uint32_t a = 0x9e3779b9, b = 0x9e3779b9, c = 0; /* hash key */
+	const uint8_t *p;
 
-	// b += *ptrs->proto;
-	p = (uint8_t *)&port;
+	p = (const uint8_t *)&port;
 	b += p[1] << 16;
 	b += p[0] << 8;
-	p = (uint8_t *)&addr;
+	p = (const uint8_t *)&addr;
 	b += p[3];
 	a += p[2] << 24;
 	a += p[1] << 16;
 	a += p[0] << 8;
-	mix(a, b, c);
+
+	a -= b; a -= c; a ^= (c >> 13);
+	b -= c; b -= a; b ^= (a << 8);
+	c -= a; c -= b; c ^= (b >> 13);
+	a -= b; a -= c; a ^= (c >> 12);
+	b -= c; b -= a; b ^= (a << 16);
+	c -= a; c -= b; c ^= (b >> 5);
+	a -= b; a -= c; a ^= (c >> 3);
+	b -= c; b -= a; b ^= (a << 10);
+	c -= a; c -= b; c ^= (b >> 15);
+
 	return c;
 }
-#undef mix
+
+static inline struct hlist_head *smt_ctx_bucket(struct homa_sock *hsk,
+						uint32_t peer_addr,
+						uint16_t peer_port)
+{
+	int bucket_id = ms_rthash(peer_addr, peer_port)
+			& (HOMA_SERVER_RPC_BUCKETS - 1);
+	return &SMT_SOCK(hsk)->ctx_buckets[bucket_id];
+}
 
 int __smt_sock_init(struct homa_sock *hsk, struct homa *homa)
 {
@@ -49,12 +56,35 @@ int __smt_sock_init(struct homa_sock *hsk, struct homa *homa)
 	return 0;
 }
 
-static struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
+// hsk->smt is expected to be not NULL before call
+static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 					 const uint32_t peer_addr,
 					 const uint16_t peer_port,
-					 struct hlist_head *ctxs)
+					 struct hlist_head *bucket)
 {
-	return NULL;
+	struct smt_context *ctx, *reuse_ctx;
+
+	if (!SMT_SOCK(hsk)->reuse_ctx)
+		return NULL;
+	reuse_ctx = SMT_SOCK(hsk)->reuse_ctx;
+
+	ctx = kmem_cache_alloc(smt_ctx_kmem, GFP_ATOMIC);
+	printk("%s ctx %px\n", __func__, ctx);
+	if (!ctx) {
+		smt_pr_err("%s smt_ctx_kmem alloc failed\n", __FUNCTION__);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	ctx->tx_conf = reuse_ctx->tx_conf;
+	ctx->rx_conf = reuse_ctx->rx_conf;
+	ctx->peer_addr = peer_addr;
+	ctx->peer_port = peer_port;
+	ctx->aes_gcm_128_send = reuse_ctx->aes_gcm_128_send;
+	ctx->aes_gcm_128_recv = reuse_ctx->aes_gcm_128_recv;
+
+	hlist_add_head(&ctx->hlist, bucket);
+
+	return ctx;
 }
 
 static struct smt_context *smt_ctx_query(struct homa_sock *hsk,
@@ -239,28 +269,24 @@ int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 		}
 	}
 
-	int bucket_id = ms_rthash(crypto_info_optval.smt.peer_addr,
-		crypto_info_optval.smt.peer_port)
-		& (HOMA_SERVER_RPC_BUCKETS - 1);
-	struct hlist_head *ctxs = &SMT_SOCK(hsk)->ctx_buckets[bucket_id];
+	struct hlist_head *bucket = smt_ctx_bucket(hsk,
+		crypto_info_optval.smt.peer_addr,
+		crypto_info_optval.smt.peer_port);
 
 	ctx = smt_ctx_query(hsk, crypto_info_optval.smt.peer_addr,
-		crypto_info_optval.smt.peer_port, ctxs);
+		crypto_info_optval.smt.peer_port, bucket);
 
-	// malloc a new ctx if can not find one
 	if (!ctx) {
-		struct hlist_head *ctxs;
 		ctx = kmem_cache_alloc(smt_ctx_kmem, GFP_ATOMIC);
-		ctxs = &SMT_SOCK(hsk)->ctx_buckets[bucket_id];
-		hlist_add_head(&ctx->hlist, ctxs);
-		if ((crypto_info_optval.smt.peer_addr == 0)
-				&& (crypto_info_optval.smt.peer_port == 0)) {
-			SMT_SOCK(hsk)->reuse_ctx = ctx;
-		}
+		hlist_add_head(&ctx->hlist, bucket);
 	}
 
-	rc = smt_ctx_init(hsk,
-		&crypto_info_optval.smt_aes_gcm_128, ctx, tx);
+	if ((crypto_info_optval.smt.peer_addr == 0)
+			&& (crypto_info_optval.smt.peer_port == 0)) {
+		SMT_SOCK(hsk)->reuse_ctx = ctx;
+	}
+
+	rc = smt_ctx_init(hsk, &crypto_info_optval.smt_aes_gcm_128, ctx, tx);
 	if (rc)
 		goto err_crypto_info;
 
@@ -272,4 +298,35 @@ err_crypto_info:
 	kmem_cache_free(smt_ctx_kmem, ctx);
 out:
 	return rc;
+}
+
+int smt_crpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
+{
+	uint32_t addr;
+	uint16_t port;
+	struct hlist_head* bucket;
+	struct smt_context *ctx;
+	struct smt_rpc *rpc_ctx;
+
+	if (!hsk->smt)
+		return 0;
+
+	addr = ipv6_to_ipv4(rpc->peer->addr);
+	port = htons(rpc->dport);
+	bucket = smt_ctx_bucket(hsk, addr, port);
+	ctx = smt_ctx_query(hsk, addr, port, bucket);
+	if (ctx == NULL)
+		ctx = smt_ctx_clone(rpc->hsk, addr, port, bucket);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
+
+	// TODO: move out from sock lock
+	rpc_ctx = kmem_cache_alloc(smt_rpc_ctx_kmem, GFP_ATOMIC);
+	if (!rpc_ctx)
+		return -ENOMEM;
+	rpc->smt = (void *)rpc_ctx;
+	rpc_ctx->ctx = ctx;
+
+// TODO: better error handle
+	return 0;
 }
