@@ -215,11 +215,20 @@ struct homa_rpc *homa_rpc_alloc_server(struct homa_sock *hsk,
 	}
 	hlist_add_head(&srpc->hash_links, &bucket->rpcs);
 	list_add_tail_rcu(&srpc->active_links, &hsk->active_rpcs);
+#ifdef CONFIG_SMT
+	smt_rpc_alloc_server_sock_lock(hsk, srpc);
+#endif
 	homa_sock_unlock(hsk);
+#ifdef CONFIG_SMT
+	if (!is_smt_rpc(srpc)) {
+#endif
 	if (ntohl(h->seg.offset) == 0 && srpc->msgin.num_bpages > 0) {
 		set_bit(RPC_PKTS_READY, &srpc->flags);
 		homa_rpc_handoff(srpc);
 	}
+#ifdef CONFIG_SMT
+	}
+#endif
 	INC_METRIC(requests_received, 1);
 	return srpc;
 

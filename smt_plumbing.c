@@ -97,8 +97,9 @@ int smt_unload(void)
 
 int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
 {
-	return smt_crpc_ctx_init(hsk, rpc);
+	return smt_rpc_ctx_init(hsk, rpc);
 }
+
 
 void smt_rpc_release(struct homa_rpc *rpc)
 {

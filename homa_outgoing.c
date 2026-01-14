@@ -190,7 +190,17 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	homa_peer_get_acks(rpc->peer, 1, &h->ack);
 	IF_NO_STRIP(h->cutoff_version = rpc->peer->cutoff_version);
 	h->retransmit = 0;
-	// TODO: smt gso offset etc.
+	h->pad[0] = 0;
+	h->pad[1] = 0;
+	h->pad[2] = 0;
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc)) {
+		u32 gso_offset = (u32)offset;
+		h->pad[0] = (gso_offset >> 16) & 0xff;
+		h->pad[1] = (gso_offset >> 8) & 0xff;
+		h->pad[2] = gso_offset & 0xff;
+	}
+#endif
 
 	if (pad_info.hdr_len > 0)
 		smt_h = skb_put(skb, pad_info.hdr_len);
@@ -249,26 +259,28 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	}
 
 #ifdef CONFIG_SMT
-	smt_h[0] = 0x17;
-	smt_h[1] = 0x03;
-	smt_h[2] = 0x03;
+	if (is_smt_rpc(rpc)) {
+		smt_h[0] = 0x17;
+		smt_h[1] = 0x03;
+		smt_h[2] = 0x03;
 
-	int smt_h_l = length + pad_info.hdr_len - 5 + pad_info.trl_len
-			+ segs * sizeof(struct homa_seg_hdr)
-			- trailer_only * sizeof(struct homa_seg_hdr);
+		int smt_h_l = length + pad_info.hdr_len - 5 + pad_info.trl_len
+				+ segs * sizeof(struct homa_seg_hdr)
+				- trailer_only * sizeof(struct homa_seg_hdr);
 
-	smt_h[3] = smt_h_l >> 8;
-	smt_h[3] = smt_h_l & 0xff;
+		smt_h[3] = smt_h_l >> 8;
+		smt_h[4] = smt_h_l & 0xff;
 
-	for (int i=5; i<pad_info.hdr_len; i++) {
-		smt_h[i] = 0xFF;
+		for (int i=5; i<pad_info.hdr_len; i++) {
+			smt_h[i] = 0xFF;
+		}
+	#define MAX_SMT_TRAILER 32
+		u8 smt_t_src[MAX_SMT_TRAILER] = {0};
+		for (int i=0; i<pad_info.trl_len; i++) {
+			smt_t_src[i] = 0xFF;
+		}
+		smt_t = smt_t_src;
 	}
-#define MAX_SMT_TRAILER 32
-	u8 smt_t_src[MAX_SMT_TRAILER] = {0};
-	for (int i=0; i<pad_info.trl_len; i++) {
-		smt_t_src[i] = 0xFF;
-	}
-	smt_t = smt_t_src;
 #endif
 
 	if (pad_info.hdr_len > 0)
@@ -326,6 +338,8 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 #ifdef CONFIG_SMT
 	// SMT TODO: check rpc and if it is a SMT rpc, set padding info
 	if (is_smt_rpc(rpc)) {
+		smt_pr_devel("homa_message_out_fill: SMT rpc %lld detected\n",
+			     rpc->id);
 		pad_info = smt_get_padding_info();
 	}
 #endif

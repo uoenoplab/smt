@@ -222,6 +222,7 @@ struct homa_message_in {
 	 */
 	u64 birth;
 #endif /* See strip.py */
+
 };
 
 #ifndef __STRIP__ /* See strip.py */

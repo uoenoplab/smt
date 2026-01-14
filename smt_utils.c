@@ -300,7 +300,7 @@ out:
 	return rc;
 }
 
-int smt_crpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
+int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 {
 	uint32_t addr;
 	uint16_t port;
@@ -326,6 +326,10 @@ int smt_crpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 		return -ENOMEM;
 	rpc->smt = (void *)rpc_ctx;
 	rpc_ctx->ctx = ctx;
+
+	SMT_RPC(rpc)->smt_max_pkt_data =
+		dst_mtu(homa_get_dst(rpc->peer, rpc->hsk))
+		- rpc->hsk->ip_header_length - sizeof(struct homa_data_hdr);
 
 // TODO: better error handle
 	return 0;

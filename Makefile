@@ -14,6 +14,7 @@ HOMA_OBJS := homa_devel.o \
 	timetrace.o
 
 SMT_OBJS := smt_plumbing.o \
+	smt_incoming.o \
 	smt_utils.o
 
 ifneq ($(__STRIP__),)
@@ -51,16 +52,18 @@ override SMT_CFLAGS += -DCONFIG_SMT
 MY_CFLAGS += -g
 ccflags-y += $(MY_CFLAGS) $(SMT_CFLAGS)
 
+THREADS ?= $(shell nproc)
+
 else
 
 all:
-	$(MAKE) -C $(KDIR) M=$(shell pwd) modules
+	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) modules
 
 info:
-	$(MAKE) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DSMT_INFO" modules
+	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DSMT_INFO" modules
 
 debug:
-	$(MAKE) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DSMT_DEBUG -fno-reorder-functions" modules
+	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DSMT_DEBUG -fno-reorder-functions" modules
 
 install:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) modules_install

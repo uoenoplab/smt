@@ -7,32 +7,6 @@
 
 /* helpers */
 
-#ifdef SMT_DEBUG
-#define SMT_INFO
-#define smt_pr_devel(fmt, arg...) pr_info(fmt, ##arg)
-#else
-#define smt_pr_devel(fmt, arg...) {}
-#endif
-
-#define SMT_TRACE_FUNC_ENTER() smt_pr_devel("%s: Enter\n", __func__)
-#define SMT_TRACE_FUNC_EXIT() smt_pr_devel("%s: Leave\n", __func__)
-
-#ifdef SMT_INFO
-#define smt_pr_info(fmt, arg...) pr_info(fmt, ##arg)
-#define smt_delay_flush() do { for (size_t i = 0; i < 20; i++) { printk("%s: flush", __func__); } mdelay(100); } while(0)
-#else
-#define smt_pr_info(fmt, arg...) {}
-#define smt_delay_flush() {}
-#endif
-
-#define smt_pr_err(fmt, arg...) pr_err(fmt, ##arg)
-
-#define smt_tt_record(fmt) tt_record(fmt)
-#define smt_tt_record1(fmt, arg...) tt_record1(fmt, ##arg)
-#define smt_tt_record2(fmt, arg...) tt_record2(fmt, ##arg)
-#define smt_tt_record3(fmt, arg...) tt_record3(fmt, ##arg)
-#define smt_tt_record4(fmt, arg...) tt_record4(fmt, ##arg)
-
 static inline void hexdump(const char *title, unsigned char *buf,
 			   unsigned int len)
 {
@@ -128,6 +102,11 @@ struct smt_sock {
 // TODO: rpc free
 struct smt_rpc {
 	struct smt_context *ctx;
+	/**
+	 * @smt_max_pkt_data: Max payload bytes for an SMT packet segment.
+	 */
+	unsigned int smt_max_pkt_data;
+
 	char smt_rpc_crypto_tx[40];
 	char smt_rpc_crypto_rx[40];
 	char smt_rpc_cb_rx[72];
@@ -150,6 +129,57 @@ static inline void smt_ctx_destory(struct smt_context *ctx)
 	kmem_cache_free(smt_ctx_kmem, ctx);
 }
 
-int smt_crpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc);
+int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc);
+
+/* smt_incoming.c */
+
+
+static inline u8 smt_extra_ip_id(struct homa_data_hdr *h)
+{
+	return (h->retransmit >> 4) & 0x0f;
+}
+
+static inline u16 smt_logical_ip_id(struct sk_buff *skb)
+{
+	struct homa_data_hdr *h = (struct homa_data_hdr *)skb->data;
+
+	return ntohs(ip_hdr(skb)->id) + smt_extra_ip_id(h);
+}
+
+static inline u32 smt_gso_offset(struct sk_buff *skb)
+{
+	struct homa_data_hdr *h = (struct homa_data_hdr *)skb->data;
+
+	return ((u8)h->pad[0] << 16) | ((u8)h->pad[1] << 8) | (u8)h->pad[2];
+}
+
+static inline int smt_logical_data_bytes(struct sk_buff *skb, u16 ip_id)
+{
+	int skb_len = skb->len - skb_transport_offset(skb);
+
+	if (ip_id == 0)
+		skb_len -= SMT_RECORD_EXTRA_LENGTH;
+
+	if (likely(skb_len - sizeof(struct homa_data_hdr) + sizeof(struct homa_seg_hdr) > SMT_RECORD_EXTRA_POST_LENGTH))
+		return skb_len - sizeof(struct homa_data_hdr);
+	return skb_len - sizeof(struct homa_data_hdr) + sizeof(struct homa_seg_hdr);
+}
+
+static inline bool smt_trailer_only(struct sk_buff *skb, u16 ip_id)
+{
+	if (ip_id == 0)
+		return false;
+	return (smt_logical_data_bytes(skb, ip_id) <= SMT_RECORD_EXTRA_POST_LENGTH);
+}
+
+static inline int smt_logical_offset(struct homa_rpc *rpc, u16 ip_id,
+				  u32 gso_offset)
+{
+	int offset = (int)(ip_id * SMT_RPC(rpc)->smt_max_pkt_data + gso_offset);
+
+	if (ip_id != 0)
+		offset -= SMT_RECORD_EXTRA_LENGTH;
+	return offset;
+}
 
 #endif /* _SMT_IMPL_H */
