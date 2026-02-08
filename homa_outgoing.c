@@ -160,6 +160,9 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 		trailer_only = 1;
 	}
 
+	smt_pr_devel("%s: length=%d max_seg_data=%d pad_hdr=%d pad_trl=%d smt_length=%d segs=%lld trailer_only=%d\n", __func__,
+	       length, max_seg_data, pad_info.hdr_len, pad_info.trl_len, smt_length, segs, trailer_only);
+
 	/* Initialize the overall skb. */
 #ifndef __STRIP__ /* See strip.py */
 	skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) + pad_info.hdr_len);
@@ -224,6 +227,11 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	homa_info->rpc = rpc;
 	homa_info->dont_defer = false;
 
+	smt_pr_devel("%s: wire_bytes=%d data_bytes=%d seg_length=%d offset=%d\n", __func__,
+	       homa_info->wire_bytes, homa_info->data_bytes, homa_info->seg_length, homa_info->offset);
+	smt_pr_devel("%s: segs=%lld homa_data_hdr=%zu ip_hdr=%d eth_overhead=%d\n", __func__,
+	       segs, sizeof(struct homa_data_hdr), hsk->ip_header_length, HOMA_ETH_OVERHEAD);
+
 #ifndef __STRIP__ /* See strip.py */
 	if (segs > 1 && !homa_sock_hijacked(hsk)) {
 #else /* See strip.py */
@@ -256,6 +264,9 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 		    hsk->homa->gso_force_software ? 0xd :
 		    (hsk->inet.sk.sk_family == AF_INET6) ? SKB_GSO_TCPV6 :
 		    SKB_GSO_TCPV4;
+
+		smt_pr_devel("%s: segs=%lld gso_size=%d gso_type=0x%x\n", __func__,
+		       segs, gso_size, skb_shinfo(skb)->gso_type);
 	}
 
 #ifdef CONFIG_SMT
@@ -286,6 +297,12 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	if (pad_info.hdr_len > 0)
 		err = homa_skb_append_to_frag(rpc->hsk->homa, skb, smt_t,
 						pad_info.trl_len);
+
+	smt_pr_devel("%s: len=%d data_len=%d truesize=%d headroom=%d tailroom=%d\n", __func__,
+	       skb->len, skb->data_len, skb->truesize,
+	       skb_headroom(skb), skb_tailroom(skb));
+	smt_pr_devel("%s: nr_frags=%d\n", __func__,
+	       skb_shinfo(skb)->nr_frags);
 
 	return skb;
 
@@ -359,9 +376,18 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 	/* Compute the geometry of packets. */
 	dst = homa_get_dst(rpc->peer, rpc->hsk);
 	mtu = dst_mtu(dst);
+
+	smt_pr_devel("%s: peer_addr=%pI6c dst_dev=%s dst_mtu=%d\n", __func__,
+	       &rpc->peer->addr, dst->dev ? dst->dev->name : "NULL", mtu);
+
 	max_seg_data = mtu - rpc->hsk->ip_header_length
 			- sizeof(struct homa_data_hdr);
 	gso_size = dst->dev->gso_max_size;
+
+	smt_pr_devel("%s:  rpc_id=%lld msg_len=%zu mtu=%d ip_hdr_len=%d homa_data_hdr=%zu max_seg_data=%d\n", __func__,
+	       rpc->id, iter->count, mtu, rpc->hsk->ip_header_length, sizeof(struct homa_data_hdr), max_seg_data);
+	smt_pr_devel("%s:  hdr_len=%d trl_len=%d\n", __func__,
+	       pad_info.hdr_len, pad_info.trl_len);
 	if (gso_size > rpc->hsk->homa->max_gso_size)
 		gso_size = rpc->hsk->homa->max_gso_size;
 	dst_release(dst);
@@ -402,6 +428,9 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 	UNIT_LOG("; ", "mtu %d, max_seg_data %d, max_gso_data %d",
 		 mtu, max_seg_data, max_gso_data);
 
+	smt_pr_devel("%s:  gso_size=%d segs_per_gso=%lld max_gso_data=%d\n", __func__,
+	       gso_size, segs_per_gso, max_gso_data);
+
 #ifndef __STRIP__ /* See strip.py */
 	rpc->msgout.granted = rpc->msgout.unscheduled;
 #endif /* See strip.py */
@@ -427,6 +456,9 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 		// reserve bytes for smt header and trailer
 		skb_msg_data_bytes -= pad_info.hdr_len + pad_info.trl_len;
 		offset = rpc->msgout.length - bytes_left;
+
+		smt_pr_devel("%s:  max_gso_data=%d pad_hdr=%d pad_trl=%d skb_msg_data_bytes=%d offset=%d bytes_left=%d\n", __func__,
+		       max_gso_data, pad_info.hdr_len, pad_info.trl_len, skb_msg_data_bytes, offset, bytes_left);
 #ifndef __STRIP__ /* See strip.py */
 		if (offset < rpc->msgout.unscheduled &&
 		    (offset + skb_msg_data_bytes) > rpc->msgout.unscheduled) {

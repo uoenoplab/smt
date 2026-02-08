@@ -38,6 +38,9 @@ struct homa_rpc *homa_rpc_alloc_client(struct homa_sock *hsk,
 	struct homa_rpc *crpc;
 	int err;
 
+	smt_pr_devel("%s:  dest_addr=%pI6c family=%d port=%d\n", __func__,
+	       &dest_addr_as_ipv6, dest->sa.sa_family, ntohs(dest->in6.sin6_port));
+
 	crpc = kzalloc(sizeof(*crpc), GFP_KERNEL);
 	if (unlikely(!crpc)) {
 		hsk->error_msg = "couldn't allocate memory for client RPC";
@@ -57,6 +60,10 @@ struct homa_rpc *homa_rpc_alloc_client(struct homa_sock *hsk,
 		crpc->peer = NULL;
 		goto error;
 	}
+
+	smt_pr_devel("%s:  peer created, peer->addr=%pI6c\n", __func__,
+	       &crpc->peer->addr);
+
 	crpc->dport = ntohs(dest->in6.sin6_port);
 	crpc->msgin.length = -1;
 	crpc->msgout.length = -1;

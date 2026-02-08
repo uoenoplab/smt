@@ -97,17 +97,19 @@ echo "--------------------------------------------------"
 
 if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
   echo "[+] Reloading smt/homa"
-  rmmod smt 2>/dev/null || rmmod homa 2>/dev/null || true
-  insmod "${smt_root}/module/smt.ko"
-  lsmod | grep smt || true
+  rmmod homa 2>/dev/null || rmmod homa 2>/dev/null || true
+  insmod "${smt_root}/homa.ko"
+  lsmod | grep homa || true
 fi
 
-if [[ $requires_kernel_src -eq 1 ]]; then
-  echo "[+] Reloading mlx5_core from source (mlx5-smt-patch) for smt-hw"
-  "${smt_root}/mlx5-smt-patch/reload.sh" "$KERNEL_SRC"
-else
-  echo "[+] Reloading mainline mlx5_core via modprobe"
-  "${smt_root}/mlx5-smt-patch/reload.sh" --modprobe
+if [[ "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+  if [[ $requires_kernel_src -eq 1 ]]; then
+    echo "[+] Reloading mlx5_core from source (mlx5-smt-patch) for smt-hw"
+    "${smt_root}/mlx5-smt-patch/reload.sh" "$KERNEL_SRC"
+  else
+    echo "[+] Reloading mainline mlx5_core via modprobe"
+    "${smt_root}/mlx5-smt-patch/reload.sh" --modprobe
+  fi
 fi
 
 echo "[+] Waiting 3s for ${IFNAME} to settle after mlx5 reload"

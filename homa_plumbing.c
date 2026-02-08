@@ -660,7 +660,9 @@ int __init homa_load(void)
 	}
 
 #ifndef __STRIP__ /* See strip.py */
+#ifndef CONFIG_SMT
 	homa_hijack_init();
+#endif
 #endif /* See strip.py */
 #ifndef __UPSTREAM__ /* See strip.py */
 	tt_set_temp(homa->temp);
@@ -717,7 +719,9 @@ void __exit homa_unload(void)
 #endif
 
 #ifndef __STRIP__ /* See strip.py */
+#ifndef CONFIG_SMT
 	homa_hijack_end();
+#endif
 #endif /* See strip.py */
 	if (timer_kthread) {
 		timer_thread_exit = 1;

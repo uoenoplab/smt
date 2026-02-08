@@ -69,7 +69,7 @@ static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 	reuse_ctx = SMT_SOCK(hsk)->reuse_ctx;
 
 	ctx = kmem_cache_alloc(smt_ctx_kmem, GFP_ATOMIC);
-	printk("%s ctx %px\n", __func__, ctx);
+	smt_pr_devel("%s ctx %px\n", __func__, ctx);
 	if (!ctx) {
 		smt_pr_err("%s smt_ctx_kmem alloc failed\n", __FUNCTION__);
 		return ERR_PTR(-ENOMEM);
