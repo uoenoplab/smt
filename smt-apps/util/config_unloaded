@@ -116,7 +116,8 @@ echo "[+] Waiting 3s for ${IFNAME} to settle after mlx5 reload"
 sleep 3
 
 echo "[+] Setting IP ${IPADDR} on ${IFNAME}"
-ip addr replace "$IPADDR" dev "$IFNAME"
+ip addr flush dev "$IFNAME"
+ip addr add "$IPADDR" dev "$IFNAME"
 
 echo "[+] Setting CPU governor to performance and enable turbo"
 cpupower frequency-set -g performance
