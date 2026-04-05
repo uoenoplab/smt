@@ -15,4 +15,6 @@ struct smt_rx_logical_info {
 	bool trailer_only;
 };
 
+#define SMT_RX_INFO(skb) ((struct smt_rx_logical_info *)(skb)->cb)
+
 #endif /* _SMT_PLUMBING_IMPL_H */

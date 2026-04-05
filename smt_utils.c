@@ -3,7 +3,16 @@
 #include "homa_peer.h"
 
 struct kmem_cache *smt_ctx_kmem;
-struct kmem_cache *smt_rpc_ctx_kmem;
+
+static inline unsigned int smt_peer_mtu(struct homa_peer *peer,
+					struct homa_sock *hsk)
+{
+	struct dst_entry *dst = rcu_dereference(peer->dst);
+
+	if (likely(dst))
+		return dst_mtu(dst);
+	return dst_mtu(homa_get_dst(peer, hsk));
+}
 
 static inline uint32_t ms_rthash(const uint32_t addr, const uint16_t port)
 {
@@ -306,31 +315,45 @@ int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 	uint16_t port;
 	struct hlist_head* bucket;
 	struct smt_context *ctx;
-	struct smt_rpc *rpc_ctx;
+	int rc = 0;
+	u64 __t;
 
 	if (!hsk->smt)
 		return 0;
 
+	u64 __t2;
+
+	__t = SMT_TIME_START();
+
 	addr = ipv6_to_ipv4(rpc->peer->addr);
 	port = htons(rpc->dport);
 	bucket = smt_ctx_bucket(hsk, addr, port);
+
+	__t2 = SMT_TIME_START();
 	ctx = smt_ctx_query(hsk, addr, port, bucket);
-	if (ctx == NULL)
+	SMT_TIME_END(smt_ctx_query, __t2);
+
+	if (ctx == NULL) {
+		__t2 = SMT_TIME_START();
 		ctx = smt_ctx_clone(rpc->hsk, addr, port, bucket);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+		SMT_TIME_END(smt_ctx_clone, __t2);
+	}
+	if (IS_ERR(ctx)) {
+		rc = PTR_ERR(ctx);
+		goto out;
+	}
 
-	// TODO: move out from sock lock
-	rpc_ctx = kmem_cache_alloc(smt_rpc_ctx_kmem, GFP_ATOMIC);
-	if (!rpc_ctx)
-		return -ENOMEM;
-	rpc->smt = (void *)rpc_ctx;
-	rpc_ctx->ctx = ctx;
+	SMT_RPC(rpc)->ctx = ctx;
 
-	SMT_RPC(rpc)->smt_max_pkt_data =
-		dst_mtu(homa_get_dst(rpc->peer, rpc->hsk))
+	__t2 = SMT_TIME_START();
+	rcu_read_lock();
+	SMT_RPC(rpc)->smt_max_pkt_data = smt_peer_mtu(rpc->peer, rpc->hsk)
 		- rpc->hsk->ip_header_length - sizeof(struct homa_data_hdr);
+	rcu_read_unlock();
+	SMT_TIME_END(smt_ctx_dst_mtu, __t2);
 
 // TODO: better error handle
-	return 0;
+out:
+	SMT_TIME_END(smt_ctx_init, __t);
+	return rc;
 }

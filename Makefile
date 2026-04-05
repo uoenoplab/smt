@@ -47,7 +47,7 @@ ifneq ($(KERNELRELEASE),)
 
 obj-m += homa.o
 homa-y = $(HOMA_OBJS) $(SMT_OBJS)
-override SMT_CFLAGS += -DCONFIG_SMT
+override SMT_CFLAGS += -DCONFIG_SMT -DCONFIG_HOMA_SMT_PROFILING
 
 MY_CFLAGS += -g
 ccflags-y += $(MY_CFLAGS) $(SMT_CFLAGS)

@@ -162,7 +162,6 @@ ethtool -C "$IFNAME" adaptive-rx off rx-usecs 5 rx-frames 1
 if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
   echo "[+] Applying Homa sysctls"
   sysctl /net/homa/link_mbps=100000
-  sysctl /net/homa/max_nic_queue_ns=2000
   sysctl /net/homa/unsched_bytes=60000
   sysctl /net/homa/max_incoming=480000
   sysctl /net/homa/num_priorities=8

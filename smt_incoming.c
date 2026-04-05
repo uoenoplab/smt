@@ -10,6 +10,7 @@ struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,
 	struct smt_rx_logical_info info;
 	u16 ip_id = smt_logical_ip_id(skb);
 	u32 gso_offset = smt_gso_offset(skb);
+	u64 __t = SMT_TIME_START();
 
 	info.start = smt_logical_offset(rpc, ip_id, gso_offset);
 	info.length = smt_logical_data_bytes(skb, ip_id);
@@ -25,7 +26,7 @@ struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,
 
 		if (skb->len - skb_transport_offset(skb) < SMT_RECORD_EXTRA_PRE_LENGTH) {
 			info.record_data_len = -1;
-			return info;
+			goto out;
 		}
 
 		smt_header = skb_transport_header(skb)
@@ -35,13 +36,13 @@ struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,
 		if ((smt_header[0] != 0x17) || (smt_header[1] != 0x03) ||
 		    (smt_header[2] != 0x03)) {
 			info.record_data_len = -1;
-			return info;
+			goto out;
 		}
 
 		record_len = (smt_header[3] << 8) | (smt_header[4] & 0xff);
 		if (record_len <= 0) {
 			info.record_data_len = -1;
-			return info;
+			goto out;
 		}
 
 		info.record_data_len = record_len + TLS_HEADER_SIZE -
@@ -56,6 +57,8 @@ struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,
 		info.record_data_offset = -1;
 	}
 
+out:
+	SMT_TIME_END(smt_rx_calc, __t);
 	return info;
 }
 
@@ -65,27 +68,29 @@ bool smt_record_complete(struct homa_rpc *rpc, struct sk_buff *skb)
 	u8 *smt_header;
 	int record_len, record_data_len, data_offset, data_end, max_frame_data;
 	struct homa_gap *gap;
+	bool result = false;
+	u64 __t = SMT_TIME_START();
 
 	/* Get the first packet in the queue (packets are ordered by offset) */
 	first_skb = skb_peek(&rpc->msgin.packets);
 	if (!first_skb)
-		return false;
+		goto out;
 
 	/* Check if the first packet is actually the first packet of a record */
 	if (smt_logical_ip_id(first_skb) != 0)
-		return false;
+		goto out;
 
 	smt_pr_devel("%s: skb_transport_offset(first_skb) %d first_skb->len %d\n",
 		     __func__, skb_transport_offset(first_skb), first_skb->len);
 	if (first_skb->len - skb_transport_offset(first_skb) < SMT_RECORD_EXTRA_PRE_LENGTH)
-		return false;
+		goto out;
 
 	smt_header = skb_transport_header(first_skb)
 		+ sizeof(struct homa_data_hdr) - sizeof(struct homa_seg_hdr);
 	/* not SMT record header */
 	if ((smt_header[0] != 0x17) || (smt_header[1] != 0x03) ||
 	    (smt_header[2] != 0x03))
-		return false;
+		goto out;
 
 	record_len = (smt_header[3] << 8) | (smt_header[4] & 0xff);
 	record_data_len = record_len + TLS_HEADER_SIZE - SMT_RECORD_EXTRA_POST_LENGTH;
@@ -96,7 +101,7 @@ bool smt_record_complete(struct homa_rpc *rpc, struct sk_buff *skb)
 		     __func__, record_len, max_frame_data, record_data_len);
 
 	if (record_len <= 0)
-		return false;
+		goto out;
 
 	data_offset = smt_logical_offset(rpc, 0, smt_gso_offset(first_skb));
 	data_end = data_offset + record_data_len;
@@ -104,14 +109,20 @@ bool smt_record_complete(struct homa_rpc *rpc, struct sk_buff *skb)
 		     __func__, data_offset, data_end, rpc->msgin.recv_end);
 
 	if (rpc->msgin.recv_end < data_end)
-		return false;
+		goto out;
 
 	list_for_each_entry(gap, &rpc->msgin.gaps, links) {
 		if (gap->start >= data_end)
 			break;
-		return false;
+		goto out;
 	}
-	return true;
+	result = true;
+
+out:
+	SMT_TIME_END(smt_record_complete, __t);
+	if (result)
+		SMT_COUNT(smt_record_complete_true);
+	return result;
 }
 
 int smt_data_offset(struct sk_buff *skb)
@@ -130,8 +141,5 @@ int smt_rpc_alloc_server_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
 	err = smt_rpc_ctx_init(hsk, rpc);
 	if (err)
 		return err;
-	if (!rpc->smt)
-		return 0;
-
 	return 0;
 }

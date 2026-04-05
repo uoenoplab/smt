@@ -231,7 +231,11 @@ struct sk_buff *homa_gro_receive(struct list_head *held_list,
 		tt_record4("homa_gro_receive got packet from 0x%x id %llu, offset %d, priority %d",
 			   saddr, homa_local_id(h_new->common.sender_id),
 			   ntohl(h_new->seg.offset), priority);
+#ifdef CONFIG_SMT
+		if (homa_data_len(skb) >= ntohl(h_new->message_length) &&
+#else
 		if (homa_data_len(skb) == ntohl(h_new->message_length) &&
+#endif
 		    (homa->gro_policy & HOMA_GRO_SHORT_BYPASS) &&
 		    !busy) {
 			INC_METRIC(gro_data_bypasses, 1);
@@ -381,7 +385,9 @@ bypass:
 	homa_softirq(skb);
 	softirq_cycles = *softirq_cycles_metric - saved_softirq_metric;
 	*softirq_cycles_metric = saved_softirq_metric;
+	INC_METRIC(bypass_softirq_calls, 1);
 	INC_METRIC(bypass_softirq_cycles, softirq_cycles);
+	INC_METRIC(softirq_calls, -1);
 	offload_core->last_gro = homa_clock();
 
 	/* This return value indicates that we have freed skb. */

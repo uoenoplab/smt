@@ -178,14 +178,17 @@ void homa_add_packet(struct homa_rpc *rpc, struct sk_buff *skb)
 #ifdef CONFIG_SMT
 #ifndef __STRIP__ /* See strip.py */
 	if (is_smt_rpc(rpc)) {
-		struct smt_rx_logical_info info =
-			smt_calc_rx_logical_info(rpc, skb);
+		struct smt_rx_logical_info *info;
 
-		start = info.start;
-		length = info.length;
-		end = info.end;
+		*SMT_RX_INFO(skb) = smt_calc_rx_logical_info(rpc, skb);
+		info = SMT_RX_INFO(skb);
+
+		start = info->start;
+		length = info->length;
+		end = info->end;
 		smt_pr_devel("SMT packet: id %lld, start %d, length %d, end %d\n",
 		       rpc->id, start, length, end);
+		tt_record4("smt_rx id %d start %d len %d end %d", rpc->id, start, length, end);
 	}
 #endif /* See strip.py */
 #endif
@@ -371,24 +374,26 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 		 */
 		if (is_smt_rpc(rpc)) {
 			struct sk_buff *first_skb;
-			struct smt_rx_logical_info first_info;
+			struct smt_rx_logical_info *first_info;
 
 			first_skb = skb_peek(&rpc->msgin.packets);
 			if (!first_skb) {
+				INC_METRIC(temp[6], 1);
 				clear_bit(RPC_PKTS_READY, &rpc->flags);
 				break;
 			}
 
-			first_info = smt_calc_rx_logical_info(rpc, first_skb);
+			first_info = SMT_RX_INFO(first_skb);
 
 			/* Must start with the first packet of a record */
-			if (first_info.record_data_len < 0) {
+			if (first_info->record_data_len < 0) {
+				INC_METRIC(temp[7], 1);
 				clear_bit(RPC_PKTS_READY, &rpc->flags);
 				break;
 			}
 
-			smt_record_data_len = first_info.record_data_len;
-			smt_record_data_offset = first_info.record_data_offset;
+			smt_record_data_len = first_info->record_data_len;
+			smt_record_data_offset = first_info->record_data_offset;
 			smt_record_copied = 0;
 
 			/* Dequeue first packet of the record */
@@ -420,6 +425,7 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 					continue;
 			}
 			if (n == 0) {
+				INC_METRIC(temp[8], 1);
 				clear_bit(RPC_PKTS_READY, &rpc->flags);
 				break;
 			}
@@ -433,7 +439,6 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 
 		tt_record1("starting copy to user space for id %d",
 			   rpc->id);
-
 		/* Each iteration of this loop copies out one skb. */
 		for (i = 0; i < n; i++) {
 			struct homa_data_hdr *h = (struct homa_data_hdr *)
@@ -522,7 +527,6 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 			end_offset = offset + pkt_length;
 #endif /* See strip.py */
 		}
-
 free_skbs:
 #ifndef __UPSTREAM__ /* See strip.py */
 		if (end_offset != 0) {
@@ -631,7 +635,7 @@ void homa_dispatch_pkts(struct sk_buff *skb)
 					 * already exist.
 					 */
 					rpc = homa_rpc_alloc_server(hsk, &saddr,
-								    h);
+								    h, skb);
 					if (IS_ERR(rpc)) {
 						INC_METRIC(server_cant_create_rpcs, 1);
 						rpc = NULL;
@@ -1211,8 +1215,11 @@ int homa_wait_private(struct homa_rpc *rpc, int nonblocking)
 	 */
 	while (1) {
 		result = 0;
-		if (!rpc->error)
+		if (!rpc->error) {
+			u64 __t = SMT_TIME_START();
 			rpc->error = homa_copy_to_user(rpc);
+			SMT_TIME_END(homa_copy_to_user, __t);
+		}
 		if (rpc->error) {
 			IF_NO_STRIP(avail_immediately = 0);
 			break;
@@ -1345,8 +1352,11 @@ struct homa_rpc *homa_wait_shared(struct homa_sock *hsk, int nonblocking)
 		}
 
 		homa_rpc_lock_preempt(rpc);
-		if (!rpc->error)
+		if (!rpc->error) {
+			u64 __t = SMT_TIME_START();
 			rpc->error = homa_copy_to_user(rpc);
+			SMT_TIME_END(homa_copy_to_user, __t);
+		}
 		if (rpc->error) {
 			if (rpc->state != RPC_DEAD)
 				break;

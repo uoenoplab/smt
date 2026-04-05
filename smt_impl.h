@@ -99,25 +99,11 @@ struct smt_sock {
 
 #define SMT_SOCK(hsk) ((struct smt_sock *)(hsk)->smt)
 
-// TODO: rpc free
-struct smt_rpc {
-	struct smt_context *ctx;
-	/**
-	 * @smt_max_pkt_data: Max payload bytes for an SMT packet segment.
-	 */
-	unsigned int smt_max_pkt_data;
-
-	char smt_rpc_crypto_tx[40];
-	char smt_rpc_crypto_rx[40];
-	char smt_rpc_cb_rx[72];
-};
-
-#define SMT_RPC(rpc) ((struct smt_rpc *)(rpc)->smt)
+#include "smt_rpc.h"
 
 /* smt_utils.c */
 
 extern struct kmem_cache *smt_ctx_kmem;
-extern struct kmem_cache *smt_rpc_ctx_kmem;
 
 int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 				  unsigned int optlen, int tx);

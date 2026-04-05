@@ -1,6 +1,12 @@
 #include "smt_plumbing.h"
 #include "smt_impl.h"
 
+/*
+ * SMT profiling is now integrated into Homa's per-CPU metrics system.
+ * See homa_metrics.h for smt_*_calls/cycles fields.
+ * Use SMT_TIME_START()/SMT_TIME_END() macros from smt_plumbing.h.
+ */
+
 inline struct homa_smt_padding_info smt_get_padding_info(void)
 {
 	struct homa_smt_padding_info padding = {
@@ -76,19 +82,13 @@ int smt_load(struct homa *homa)
 			NULL);
 	if (!smt_ctx_kmem)
 		return -ENOMEM;
-	smt_rpc_ctx_kmem = kmem_cache_create("homa_smt_rpc_ctx",
-			sizeof(struct smt_rpc), 0, SLAB_HWCACHE_ALIGN, NULL);
-	if (!smt_rpc_ctx_kmem)
-		return -ENOMEM;
-
 	return 0;
 }
 
 int smt_unload(void)
 {
-	if (smt_rpc_ctx_kmem)
-		kmem_cache_destroy(smt_rpc_ctx_kmem);
-	smt_rpc_ctx_kmem = NULL;
+	/* SMT profiling metrics are now exported via /proc/net/homa_metrics */
+	pr_info("SMT unloading (metrics available in /proc/net/homa_metrics)\n");
 	if (smt_ctx_kmem)
 		kmem_cache_destroy(smt_ctx_kmem);
 	smt_ctx_kmem = NULL;
@@ -103,7 +103,7 @@ int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
 
 void smt_rpc_release(struct homa_rpc *rpc)
 {
-	kmem_cache_free(smt_rpc_ctx_kmem, rpc->smt);
+	rpc->smt.ctx = NULL;
 }
 
 // !!! TODO !!!

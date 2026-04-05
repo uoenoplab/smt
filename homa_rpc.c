@@ -17,6 +17,7 @@
 #endif /* See strip.py */
 
 #include "smt_plumbing.h"
+#include "smt_impl.h"
 
 /**
  * homa_rpc_alloc_client() - Allocate and initialize a client RPC (one that
@@ -132,6 +133,8 @@ error:
  * @source:   IP address (network byte order) of the RPC's client.
  * @h:        Header for the first data packet received for this RPC; used
  *            to initialize the RPC.
+ * @skb:      The sk_buff containing the first data packet; used to check
+ *            SMT first-packet condition for early handoff.
  *
  * Return:  A pointer to a new RPC, which is locked, or a negative errno
  *          if an error occurred. If there is already an RPC corresponding
@@ -139,7 +142,8 @@ error:
  */
 struct homa_rpc *homa_rpc_alloc_server(struct homa_sock *hsk,
 				       const struct in6_addr *source,
-				       struct homa_data_hdr *h)
+				       struct homa_data_hdr *h,
+				       struct sk_buff *skb)
 	__cond_acquires(srpc->bucket->lock)
 {
 	u64 id = homa_local_id(h->common.sender_id);
@@ -232,8 +236,25 @@ struct homa_rpc *homa_rpc_alloc_server(struct homa_sock *hsk,
 	if (ntohl(h->seg.offset) == 0 && srpc->msgin.num_bpages > 0) {
 		set_bit(RPC_PKTS_READY, &srpc->flags);
 		homa_rpc_handoff(srpc);
+		INC_METRIC(temp[0], 1);
+	} else {
+		INC_METRIC(temp[1], 1);
+		if (ntohl(h->seg.offset) != 0)
+			INC_METRIC(temp[2], 1);
+		if (srpc->msgin.num_bpages == 0)
+			INC_METRIC(temp[3], 1);
 	}
 #ifdef CONFIG_SMT
+	} else {
+		if (srpc->msgin.num_bpages > 0 &&
+		    smt_logical_ip_id(skb) == 0 &&
+		    smt_gso_offset(skb) == 0) {
+			set_bit(RPC_PKTS_READY, &srpc->flags);
+			homa_rpc_handoff(srpc);
+			INC_METRIC(temp[4], 1);
+		} else {
+			INC_METRIC(temp[5], 1);
+		}
 	}
 #endif
 	INC_METRIC(requests_received, 1);
