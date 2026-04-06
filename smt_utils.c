@@ -182,14 +182,14 @@ static int smt_ctx_init(struct homa_sock *hsk,
 	smt_pr_devel("%s alt_crypto_info->info.cipher_type %hu \n",
 			 __func__, alt_crypto_info->info.cipher_type);
 
-	hexdump("smt_setsockopt_conf crypto_info->salt ", crypto_info->salt,
-		sizeof(crypto_info->salt));
-	hexdump("smt_setsockopt_conf crypto_info->iv ", crypto_info->iv,
-		sizeof(crypto_info->iv));
-	hexdump("smt_setsockopt_conf crypto_info->key ", crypto_info->key,
-		sizeof(crypto_info->key));
-	hexdump("smt_setsockopt_conf crypto_info->rec_seq ",
-		crypto_info->rec_seq, sizeof(crypto_info->rec_seq));
+	smt_hexdump("smt_setsockopt_conf crypto_info->salt ", crypto_info->salt,
+		    sizeof(crypto_info->salt));
+	smt_hexdump("smt_setsockopt_conf crypto_info->iv ", crypto_info->iv,
+		    sizeof(crypto_info->iv));
+	smt_hexdump("smt_setsockopt_conf crypto_info->key ", crypto_info->key,
+		    sizeof(crypto_info->key));
+	smt_hexdump("smt_setsockopt_conf crypto_info->rec_seq ",
+		    crypto_info->rec_seq, sizeof(crypto_info->rec_seq));
 	smt_pr_info("%s ctx->addr %X ctx->port %d\n", __func__,
 		ntohl(ctx->peer_addr), (int) ntohs(ctx->peer_port));
 
@@ -226,8 +226,8 @@ int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 		goto out;
 	}
 
-	hexdump("smt_ctx_select received smt_info",
-		(unsigned char *)&crypto_info_optval, optlen);
+	smt_hexdump("smt_ctx_select received smt_info",
+		    (unsigned char *)&crypto_info_optval, optlen);
 
 	// smt_pr_devel("%s crypto_info %px", __FUNCTION__, crypto_info_optval);
 	smt_pr_devel("%s crypto_info->info.version 0x%04X \n", __FUNCTION__,
@@ -287,8 +287,21 @@ int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 
 	if (!ctx) {
 		ctx = kmem_cache_alloc(smt_ctx_kmem, GFP_ATOMIC);
+		if (!ctx) {
+			rc = -ENOMEM;
+			goto out;
+		}
+		memset(ctx, 0, sizeof(*ctx));
 		hlist_add_head(&ctx->hlist, bucket);
 	}
+
+#ifndef CONFIG_SMT_NOCRYPTO
+	if ((tx && !ctx->offload_tx) || (!tx && !ctx->offload_rx)) {
+		rc = smt_sw_set_offload(ctx, tx);
+		if (rc)
+			goto err_crypto_info;
+	}
+#endif
 
 	if ((crypto_info_optval.smt.peer_addr == 0)
 			&& (crypto_info_optval.smt.peer_port == 0)) {
@@ -351,6 +364,11 @@ int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 		- rpc->hsk->ip_header_length - sizeof(struct homa_data_hdr);
 	rcu_read_unlock();
 	SMT_TIME_END(smt_ctx_dst_mtu, __t2);
+
+#ifndef CONFIG_SMT_NOCRYPTO
+	smt_sw_init_rpc(rpc, 1);
+	smt_sw_init_rpc(rpc, 0);
+#endif
 
 // TODO: better error handle
 out:

@@ -437,6 +437,24 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 		 */
 		homa_rpc_unlock(rpc);
 
+#ifdef CONFIG_SMT
+#ifndef CONFIG_SMT_NOCRYPTO
+		/* For SMT RPCs, the batch above is a full TLS record. Decrypt
+		 * the skbs in place before copying plaintext out to user.
+		 */
+		if (is_smt_rpc(rpc) && n > 0) {
+			int smt_err = smt_sw_decrypt(rpc, skbs, n);
+
+			if (smt_err) {
+				smt_pr_err("smt_sw_decrypt failed %d id %lld\n",
+					   smt_err, rpc->id);
+				error = -EBADMSG;
+				goto free_skbs;
+			}
+		}
+#endif
+#endif
+
 		tt_record1("starting copy to user space for id %d",
 			   rpc->id);
 		/* Each iteration of this loop copies out one skb. */

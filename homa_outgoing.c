@@ -151,7 +151,7 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	int smt_length = pad_info.hdr_len + pad_info.trl_len + length;
 	bool trailer_only = false;
 
-	u8 *smt_h, *smt_t;
+	u8 *smt_h = NULL;
 
 	segs = smt_length + max_seg_data - 1;
 	do_div(segs, max_seg_data);
@@ -270,33 +270,60 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	}
 
 #ifdef CONFIG_SMT
+#define MAX_SMT_TRAILER 32
 	if (is_smt_rpc(rpc)) {
+		u8 smt_t_zero[MAX_SMT_TRAILER] = {0};
+
+		/* Reserve the auth-tag region at the tail of the frag chain;
+		 * it will either be left as 0x00/0xFF placeholder (nocrypto)
+		 * or overwritten in place by smt_sw_encrypt below.
+		 */
+#ifdef CONFIG_SMT_NOCRYPTO
+		for (int i = 0; i < pad_info.trl_len; i++)
+			smt_t_zero[i] = 0xFF;
+#endif
+		err = homa_skb_append_to_frag(rpc->hsk->homa, skb, smt_t_zero,
+					      pad_info.trl_len);
+		if (err)
+			goto error;
+
+#ifdef CONFIG_SMT_NOCRYPTO
+		/* Test-only placeholder header: plaintext TLS record header
+		 * + 0xFF filler. No real encryption is performed.
+		 */
 		smt_h[0] = 0x17;
 		smt_h[1] = 0x03;
 		smt_h[2] = 0x03;
-
-		int smt_h_l = length + pad_info.hdr_len - 5 + pad_info.trl_len
-				+ segs * sizeof(struct homa_seg_hdr)
-				- trailer_only * sizeof(struct homa_seg_hdr);
-
-		smt_h[3] = smt_h_l >> 8;
-		smt_h[4] = smt_h_l & 0xff;
-
-		for (int i=5; i<pad_info.hdr_len; i++) {
+		{
+			int smt_h_l = length + pad_info.hdr_len - 5 +
+				      pad_info.trl_len +
+				      segs * sizeof(struct homa_seg_hdr) -
+				      trailer_only *
+					      sizeof(struct homa_seg_hdr);
+			smt_h[3] = smt_h_l >> 8;
+			smt_h[4] = smt_h_l & 0xff;
+		}
+		for (int i = 5; i < pad_info.hdr_len; i++)
 			smt_h[i] = 0xFF;
-		}
-	#define MAX_SMT_TRAILER 32
-		u8 smt_t_src[MAX_SMT_TRAILER] = {0};
-		for (int i=0; i<pad_info.trl_len; i++) {
-			smt_t_src[i] = 0xFF;
-		}
-		smt_t = smt_t_src;
-	}
-#endif
+#else
+		{
+			int payload_len = length +
+				(int)((segs - trailer_only) *
+				      sizeof(struct homa_seg_hdr));
 
-	if (pad_info.hdr_len > 0)
-		err = homa_skb_append_to_frag(rpc->hsk->homa, skb, smt_t,
-						pad_info.trl_len);
+			err = smt_sw_encrypt(rpc, skb,
+					     (int)(sizeof(struct homa_data_hdr) -
+						   sizeof(struct homa_seg_hdr)),
+					     payload_len);
+			if (err) {
+				smt_pr_err("%s: smt_sw_encrypt failed %d\n",
+					   __func__, err);
+				goto error;
+			}
+		}
+#endif /* CONFIG_SMT_NOCRYPTO */
+	}
+#endif /* CONFIG_SMT */
 
 	smt_pr_devel("%s: len=%d data_len=%d truesize=%d headroom=%d tailroom=%d\n", __func__,
 	       skb->len, skb->data_len, skb->truesize,

@@ -58,7 +58,6 @@ static int set_tls_crypto_info(void *crypto_info_send_ptr, void *crypto_info_rea
         } else {
             memcpy(crypto_info_read->iv, &remote_seq_be, TLS_CIPHER_AES_GCM_128_IV_SIZE);
         }
-        memcpy(crypto_info_read->iv, remote_iv + 4, TLS_CIPHER_AES_GCM_128_IV_SIZE);
         memcpy(crypto_info_read->key, remote_key, TLS_CIPHER_AES_GCM_128_KEY_SIZE);
         memcpy(crypto_info_read->salt, remote_iv, TLS_CIPHER_AES_GCM_128_SALT_SIZE);
         memcpy(crypto_info_read->rec_seq, &remote_seq_be, TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);

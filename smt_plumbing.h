@@ -110,6 +110,13 @@ static inline u64 smt_rdtsc(void)
 #endif /* CONFIG_HOMA_SMT_PROFILING */
 
 
+/* smt_sw.c */
+
+extern int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb,
+			  int smt_h_offset, int payload_len);
+extern int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs,
+			  int n);
+
 /* smt_incoming.c */
 
 struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,

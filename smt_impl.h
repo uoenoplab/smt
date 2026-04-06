@@ -2,25 +2,26 @@
 #ifndef _SMT_IMPL_H
 #define _SMT_IMPL_H
 
+#include <crypto/aead.h>
+#include <linux/scatterlist.h>
+
 #include "smt_plumbing.h"
 #include "smt_uapi.h"
 
 /* helpers */
 
-static inline void hexdump(const char *title, unsigned char *buf,
-			   unsigned int len)
-{
 #ifdef SMT_DEBUG
+static inline void smt_hexdump(const char *title, unsigned char *buf,
+			       unsigned int len)
+{
 	smt_pr_devel("%s", title);
 	while (len--)
 		smt_pr_devel(KERN_CONT "%02x ", *buf++);
 	smt_pr_devel(KERN_CONT "\n");
-#endif
 }
 
-static inline void hexdump_sg(struct scatterlist *sgl)
+static inline void smt_hexdump_sg(struct scatterlist *sgl)
 {
-#ifdef SMT_DEBUG
 	struct scatterlist *sg;
 	int i = 0;
 
@@ -31,12 +32,14 @@ static inline void hexdump_sg(struct scatterlist *sgl)
 			continue;
 		}
 
-		pr_info("sg entry %d length %u\n",
-		i, sg->length);
-	hexdump("", buf, sg->length);
+		pr_info("sg entry %d length %u\n", i, sg->length);
+		smt_hexdump("", buf, sg->length);
 	}
-#endif
 }
+#else
+#define smt_hexdump(...) do {} while (0)
+#define smt_hexdump_sg(...) do {} while (0)
+#endif
 
 /* smt structs and macros */
 
@@ -60,7 +63,6 @@ Header
 Data - Dynamic size
 Trailer
   Tag - 16 Bytes
-
 */
 
 #define SMT_RECORD_EXTRA_PRE_LENGTH (TLS_HEADER_SIZE + TLS_CIPHER_AES_GCM_128_IV_SIZE)
@@ -76,6 +78,8 @@ enum {
 	SMT_NUM_CONFIG,
 };
 
+#define SMT_MAX_CRYPT_SG 128
+
 struct smt_context {
 	u8 tx_conf : 3;
 	u8 rx_conf : 3;
@@ -90,6 +94,33 @@ struct smt_context {
 	void *offload_rx;
 
 	struct hlist_node hlist;
+};
+
+/* Per-ctx (5-tuple) software crypto pool: borrowed/returned per RPC. */
+struct smt_sw_crypto {
+	struct crypto_aead *tfm;
+	struct aead_request *aead_req;
+	int aead_req_size;
+	struct scatterlist crypt_sg[SMT_MAX_CRYPT_SG];
+	struct list_head list;
+};
+
+struct smt_sw_context {
+	struct list_head crypto_list;
+	spinlock_t crypto_list_lock;
+	int crypto_available;
+};
+
+/* Per-RPC software crypto state. Lives inside smt_rpc::smt_rpc_crypto_tx/rx.
+ * Size must stay <= 40 bytes.
+ */
+struct smt_rpc_sw_context {
+	struct smt_sw_crypto *crypto;
+	u8 iv[TLS_CIPHER_AES_GCM_128_IV_SIZE +
+	      TLS_CIPHER_AES_GCM_128_SALT_SIZE];
+	u8 nonce[TLS_CIPHER_AES_GCM_128_IV_SIZE +
+		 TLS_CIPHER_AES_GCM_128_SALT_SIZE];
+	u8 rec_seq[TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE];
 };
 
 struct smt_sock {
@@ -116,6 +147,39 @@ static inline void smt_ctx_destory(struct smt_context *ctx)
 }
 
 int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc);
+
+/* smt_sw.c */
+
+static inline struct smt_rpc_sw_context *smt_rpc_sw_tx(struct homa_rpc *rpc)
+{
+	return (struct smt_rpc_sw_context *)SMT_RPC(rpc)->smt_rpc_crypto_tx;
+}
+
+static inline struct smt_rpc_sw_context *smt_rpc_sw_rx(struct homa_rpc *rpc)
+{
+	return (struct smt_rpc_sw_context *)SMT_RPC(rpc)->smt_rpc_crypto_rx;
+}
+
+/* Copied from tls.h tls_bigint_increment */
+static inline bool smt_bigint_increment(u8 *seq, int len)
+{
+	int i;
+
+	for (i = len - 1; i >= 0; i--) {
+		++seq[i];
+		if (seq[i] != 0)
+			break;
+	}
+	return (i == -1);
+}
+
+int smt_sw_set_offload(struct smt_context *ctx, int tx);
+void smt_sw_release_resources(struct smt_context *ctx, int tx);
+int smt_sw_init_rpc(struct homa_rpc *rpc, int tx);
+void smt_sw_release_rpc(struct homa_rpc *rpc, int tx);
+int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb,
+		   int smt_h_offset, int payload_len);
+int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n);
 
 /* smt_incoming.c */
 

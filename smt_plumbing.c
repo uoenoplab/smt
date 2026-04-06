@@ -63,6 +63,10 @@ void smt_sock_destroy(struct homa_sock *hsk)
 		if (hlist_empty(&SMT_SOCK(hsk)->ctx_buckets[i]))
 			continue;
 		hlist_for_each_entry(ctx, &SMT_SOCK(hsk)->ctx_buckets[i], hlist) {
+#ifndef CONFIG_SMT_NOCRYPTO
+			smt_sw_release_resources(ctx, 1);
+			smt_sw_release_resources(ctx, 0);
+#endif
 			smt_ctx_destory(ctx);
 		}
 	}
@@ -103,6 +107,12 @@ int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
 
 void smt_rpc_release(struct homa_rpc *rpc)
 {
+#ifndef CONFIG_SMT_NOCRYPTO
+	if (rpc->smt.ctx) {
+		smt_sw_release_rpc(rpc, 1);
+		smt_sw_release_rpc(rpc, 0);
+	}
+#endif
 	rpc->smt.ctx = NULL;
 }
 

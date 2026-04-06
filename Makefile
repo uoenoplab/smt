@@ -15,6 +15,7 @@ HOMA_OBJS := homa_devel.o \
 
 SMT_OBJS := smt_plumbing.o \
 	smt_incoming.o \
+	smt_sw.o \
 	smt_utils.o
 
 ifneq ($(__STRIP__),)
@@ -47,7 +48,7 @@ ifneq ($(KERNELRELEASE),)
 
 obj-m += homa.o
 homa-y = $(HOMA_OBJS) $(SMT_OBJS)
-override SMT_CFLAGS += -DCONFIG_SMT -DCONFIG_HOMA_SMT_PROFILING
+override SMT_CFLAGS += -DCONFIG_SMT
 
 MY_CFLAGS += -g
 ccflags-y += $(MY_CFLAGS) $(SMT_CFLAGS)
@@ -107,6 +108,21 @@ $(HOMA_TARGET)/strip_decl.py: util/strip_decl.py
 	cp $< $@
 $(LINUX_SRC_DIR)/include/uapi/linux/homa.h: homa.h util/strip.py
 	util/strip.py $< > $@
+
+help:
+	@echo "Homa/SMT Build Targets:"
+	@echo "  make              - Build with default SMT config"
+	@echo "  make info         - Build with SMT info logging"
+	@echo "  make debug        - Build with SMT debug logging"
+	@echo ""
+	@echo "SMT Config Options (pass via SMT_CFLAGS):"
+	@echo "  CONFIG_SMT_NOCRYPTO      - Disable crypto (use 0xFF fillers for testing)"
+	@echo "  CONFIG_HOMA_SMT_PROFILING - Enable SMT profiling/timetrace"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make SMT_CFLAGS=\"-DCONFIG_SMT_NOCRYPTO\""
+	@echo "  make SMT_CFLAGS=\"-DCONFIG_HOMA_SMT_PROFILING\""
+	@echo "  make SMT_CFLAGS=\"-DCONFIG_SMT_NOCRYPTO -DCONFIG_HOMA_SMT_PROFILING\""
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) clean
