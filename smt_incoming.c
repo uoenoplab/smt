@@ -65,48 +65,25 @@ out:
 bool smt_record_complete(struct homa_rpc *rpc, struct sk_buff *skb)
 {
 	struct sk_buff *first_skb;
-	u8 *smt_header;
-	int record_len, record_data_len, data_offset, data_end, max_frame_data;
+	struct smt_rx_logical_info *info;
+	int data_end;
 	struct homa_gap *gap;
 	bool result = false;
 	u64 __t = SMT_TIME_START();
 
-	/* Get the first packet in the queue (packets are ordered by offset) */
 	first_skb = skb_peek(&rpc->msgin.packets);
 	if (!first_skb)
 		goto out;
 
-	/* Check if the first packet is actually the first packet of a record */
-	if (smt_logical_ip_id(first_skb) != 0)
+	info = SMT_RX_INFO(first_skb);
+
+	if (info->record_data_offset == -1)
 		goto out;
 
-	smt_pr_devel("%s: skb_transport_offset(first_skb) %d first_skb->len %d\n",
-		     __func__, skb_transport_offset(first_skb), first_skb->len);
-	if (first_skb->len - skb_transport_offset(first_skb) < SMT_RECORD_EXTRA_PRE_LENGTH)
+	if (info->record_data_offset != SMT_RPC(rpc)->decrypt_offset)
 		goto out;
 
-	smt_header = skb_transport_header(first_skb)
-		+ sizeof(struct homa_data_hdr) - sizeof(struct homa_seg_hdr);
-	/* not SMT record header */
-	if ((smt_header[0] != 0x17) || (smt_header[1] != 0x03) ||
-	    (smt_header[2] != 0x03))
-		goto out;
-
-	record_len = (smt_header[3] << 8) | (smt_header[4] & 0xff);
-	record_data_len = record_len + TLS_HEADER_SIZE - SMT_RECORD_EXTRA_POST_LENGTH;
-	max_frame_data = SMT_RPC(rpc)->smt_max_pkt_data + sizeof(struct homa_seg_hdr);
-	record_data_len -= ((record_data_len + max_frame_data - 1) / max_frame_data) * sizeof(struct homa_seg_hdr);
-	record_data_len -= SMT_RECORD_EXTRA_PRE_LENGTH;
-	smt_pr_devel("%s: record_len %d max_frame_data %d record_data_len %d\n",
-		     __func__, record_len, max_frame_data, record_data_len);
-
-	if (record_len <= 0)
-		goto out;
-
-	data_offset = smt_logical_offset(rpc, 0, smt_gso_offset(first_skb));
-	data_end = data_offset + record_data_len;
-	smt_pr_devel("%s: data_offset %d data_end %d recv_end %d\n",
-		     __func__, data_offset, data_end, rpc->msgin.recv_end);
+	data_end = info->record_data_offset + info->record_data_len;
 
 	if (rpc->msgin.recv_end < data_end)
 		goto out;

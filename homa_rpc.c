@@ -247,8 +247,7 @@ struct homa_rpc *homa_rpc_alloc_server(struct homa_sock *hsk,
 #ifdef CONFIG_SMT
 	} else {
 		if (srpc->msgin.num_bpages > 0 &&
-		    smt_logical_ip_id(skb) == 0 &&
-		    smt_gso_offset(skb) == 0) {
+		    homa_data_len(skb) >= srpc->msgin.length) {
 			set_bit(RPC_PKTS_READY, &srpc->flags);
 			homa_rpc_handoff(srpc);
 			INC_METRIC(temp[4], 1);

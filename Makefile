@@ -61,10 +61,10 @@ all:
 	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) modules
 
 info:
-	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DSMT_INFO" modules
+	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DCONFIG_SMT_INFO $(SMT_CFLAGS)" modules
 
 debug:
-	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DSMT_DEBUG -fno-reorder-functions" modules
+	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DCONFIG_SMT_DEBUG -fno-reorder-functions $(SMT_CFLAGS)" modules
 
 install:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) modules_install
@@ -116,13 +116,14 @@ help:
 	@echo "  make debug        - Build with SMT debug logging"
 	@echo ""
 	@echo "SMT Config Options (pass via SMT_CFLAGS):"
-	@echo "  CONFIG_SMT_NOCRYPTO      - Disable crypto (use 0xFF fillers for testing)"
+	@echo "  CONFIG_SMT_NOCRYPTO       - Disable crypto (use 0xFF fillers for testing)"
 	@echo "  CONFIG_HOMA_SMT_PROFILING - Enable SMT profiling/timetrace"
+	@echo "  CONFIG_SMT_HEXDUMP        - Enable hexdump helpers (requires CONFIG_SMT_DEBUG, i.e. make debug)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make SMT_CFLAGS=\"-DCONFIG_SMT_NOCRYPTO\""
 	@echo "  make SMT_CFLAGS=\"-DCONFIG_HOMA_SMT_PROFILING\""
-	@echo "  make SMT_CFLAGS=\"-DCONFIG_SMT_NOCRYPTO -DCONFIG_HOMA_SMT_PROFILING\""
+	@echo "  make debug SMT_CFLAGS=\"-DCONFIG_SMT_HEXDUMP\""
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) clean

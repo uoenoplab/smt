@@ -10,14 +10,24 @@
 
 /* helpers */
 
-#ifdef SMT_DEBUG
+#if defined(CONFIG_SMT_HEXDUMP) && !defined(CONFIG_SMT_DEBUG)
+#error "CONFIG_SMT_HEXDUMP requires CONFIG_SMT_DEBUG (use: make debug SMT_CFLAGS=-DCONFIG_SMT_HEXDUMP)"
+#endif
+
+#if defined(CONFIG_SMT_DEBUG) && defined(CONFIG_SMT_HEXDUMP)
 static inline void smt_hexdump(const char *title, unsigned char *buf,
 			       unsigned int len)
 {
-	smt_pr_devel("%s", title);
-	while (len--)
-		smt_pr_devel(KERN_CONT "%02x ", *buf++);
-	smt_pr_devel(KERN_CONT "\n");
+	char line[16 * 3 + 1];
+	unsigned int i, j, n;
+
+	for (i = 0; i < len; i += 16) {
+		n = min_t(unsigned int, 16, len - i);
+		for (j = 0; j < n; j++)
+			snprintf(line + j * 3, 4, "%02x ", buf[i + j]);
+		line[n * 3] = '\0';
+		pr_info("%s[%04x] %s\n", title, i, line);
+	}
 }
 
 static inline void smt_hexdump_sg(struct scatterlist *sgl)

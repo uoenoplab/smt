@@ -9,8 +9,8 @@
 
 /* helpers */
 
-#ifdef SMT_DEBUG
-#define SMT_INFO
+#ifdef CONFIG_SMT_DEBUG
+#define CONFIG_SMT_INFO
 #define smt_pr_devel(fmt, arg...) pr_info(fmt, ##arg)
 #else
 #define smt_pr_devel(fmt, arg...) {}
@@ -19,7 +19,7 @@
 #define SMT_TRACE_FUNC_ENTER() smt_pr_devel("%s: Enter\n", __func__)
 #define SMT_TRACE_FUNC_EXIT() smt_pr_devel("%s: Leave\n", __func__)
 
-#ifdef SMT_INFO
+#ifdef CONFIG_SMT_INFO
 #define smt_pr_info(fmt, arg...) pr_info(fmt, ##arg)
 #define smt_delay_flush() do { for (size_t i = 0; i < 20; i++) { printk("%s: flush", __func__); } mdelay(100); } while(0)
 #else

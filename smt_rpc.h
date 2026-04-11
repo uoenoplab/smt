@@ -11,6 +11,14 @@ struct smt_rpc {
 	 */
 	unsigned int smt_max_pkt_data;
 
+	/**
+	 * @decrypt_offset: Data offset of the next SMT record to decrypt.
+	 * Records must be decrypted strictly in order. Updated by
+	 * smt_record_complete (softirq) and copy_to_user (greedy).
+	 * Protected by the RPC bucket lock.
+	 */
+	int decrypt_offset;
+
 	char smt_rpc_crypto_tx[40];
 	char smt_rpc_crypto_rx[40];
 	char smt_rpc_cb_rx[72];

@@ -227,8 +227,8 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	homa_info->rpc = rpc;
 	homa_info->dont_defer = false;
 
-	smt_pr_devel("%s: wire_bytes=%d data_bytes=%d seg_length=%d offset=%d\n", __func__,
-	       homa_info->wire_bytes, homa_info->data_bytes, homa_info->seg_length, homa_info->offset);
+	// printk("%s: wire_bytes=%d data_bytes=%d seg_length=%d offset=%d\n", __func__,
+	//        homa_info->wire_bytes, homa_info->data_bytes, homa_info->seg_length, homa_info->offset);
 	smt_pr_devel("%s: segs=%lld homa_data_hdr=%zu ip_hdr=%d eth_overhead=%d\n", __func__,
 	       segs, sizeof(struct homa_data_hdr), hsk->ip_header_length, HOMA_ETH_OVERHEAD);
 

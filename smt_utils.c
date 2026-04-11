@@ -357,6 +357,7 @@ int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 	}
 
 	SMT_RPC(rpc)->ctx = ctx;
+	SMT_RPC(rpc)->decrypt_offset = 0;
 
 	__t2 = SMT_TIME_START();
 	rcu_read_lock();

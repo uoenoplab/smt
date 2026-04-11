@@ -54,6 +54,12 @@ void print_help(char *prog_name, bool is_server) {
   printf("  -q, --quiet                       Disable all normal output with log_c LOG_WARN level\n");
   printf("  -h, --help                        Display this help and exit\n");
   printf("\n");
+  printf("Environment Variables:\n");
+  printf("  HOMA_ECHO_PAYLOAD                 Control the payload pattern (default: fixed):\n");
+  printf("    fixed:                          Use fixed '?' character for all payload bytes\n");
+  printf("    mod:                            Use (i %% 256) pattern for payload bytes\n");
+  printf("    random:                         Use random bytes from /dev/urandom\n");
+  printf("\n");
 
   exit(EXIT_FAILURE);
 }

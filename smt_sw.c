@@ -294,20 +294,14 @@ int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb,
 		return nsg < 0 ? nsg : -EINVAL;
 	}
 
-	{
-		struct smt_context *ctx = SMT_RPC(rpc)->ctx;
-		smt_hexdump("smt_sw_encrypt nonce ", r->nonce,
-			    sizeof(r->nonce));
-		smt_hexdump("smt_sw_encrypt key   ",
-			    ctx->aes_gcm_128_send.key,
-			    TLS_CIPHER_AES_GCM_128_KEY_SIZE);
-	}
-
 	ret = smt_sw_do_crypt(r, sg, sg, payload_len, true);
 	if (unlikely(ret)) {
 		smt_pr_err("%s: encrypt failed %d\n", __func__, ret);
 		return ret;
 	}
+	// printk(KERN_NOTICE "smt_sw_encrypt: rpc %lld payload_len=%d total_len=%d nsg=%d rec_seq=%*phN\n",
+	//        rpc->id, payload_len, total_len, nsg,
+	//        TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
 
 	smt_h[0] = 0x17;
 	smt_h[1] = 0x03;
@@ -396,14 +390,18 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
 		(crypt_len - SMT_RECORD_EXTRA_POST_LENGTH) & 0xff;
 
 	memcpy(r->nonce, r->iv, sizeof(r->nonce));
-
-	smt_hexdump("smt_sw_decrypt nonce ", r->nonce, sizeof(r->nonce));
-	smt_hexdump("smt_sw_decrypt key   ", SMT_RPC(rpc)->ctx->aes_gcm_128_recv.key, TLS_CIPHER_AES_GCM_128_KEY_SIZE);
+	// printk(KERN_NOTICE "smt_sw_decrypt: rpc %lld n=%d crypt_len=%d total_sg_bytes=%d record_start=%d record_len=%d rec_seq=%*phN\n",
+	//        rpc->id, n, crypt_len, total_sg_bytes,
+	//        SMT_RX_INFO(skbs[0])->start, SMT_RX_INFO(skbs[0])->record_data_len,
+	//        TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
 
 	ret = smt_sw_do_crypt(r, sg, sg, crypt_len, false);
 	if (unlikely(ret)) {
-		smt_pr_err("%s: decrypt failed %d rpc %lld\n",
+		printk("%s: decrypt failed %d rpc %lld\n",
 			   __func__, ret, rpc->id);
+		printk("%s: failure crypt_len=%d total_sg_bytes=%d first_skb=%px first_header=%*phN\n",
+			   __func__, crypt_len, total_sg_bytes, skbs[0],
+			   SMT_RECORD_EXTRA_PRE_LENGTH, smt_h);
 		return ret;
 	}
 
