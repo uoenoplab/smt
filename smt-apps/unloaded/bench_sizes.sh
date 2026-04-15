@@ -7,7 +7,7 @@ REPO=/root/SMT-NG
 KDIR=/usr/src/linux-headers-6.17.8-mainline-fab
 DUR=${1:-8}
 CSV=${2:-bench_results.csv}
-SIZES=(64 256 1024 2048 4096)
+SIZES=(64 128 256 512 1024 2048 4096 8192 16384 32768 65536 100000 320000 500000 640000)
 
 declare -A PROTO=([tcp]=tcp [ktls-sw]=tcp_ktls [homa]=homa [smt-sw]=smt [smt-sw-nocrypto]=smt)
 
