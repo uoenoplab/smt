@@ -203,7 +203,10 @@ static inline u16 smt_logical_ip_id(struct sk_buff *skb)
 {
 	struct homa_data_hdr *h = (struct homa_data_hdr *)skb->data;
 
-	return ntohs(ip_hdr(skb)->id) + smt_extra_ip_id(h);
+	if (h->retransmit & 0x01)
+		return smt_extra_ip_id(h);
+
+	return ntohs(ip_hdr(skb)->id);
 }
 
 static inline u32 smt_gso_offset(struct sk_buff *skb)

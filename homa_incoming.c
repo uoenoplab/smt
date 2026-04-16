@@ -482,30 +482,26 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 
 #ifdef CONFIG_SMT
 #ifndef CONFIG_SMT_NOCRYPTO
-		/* For SMT RPCs, the batch above is a full TLS record. Decrypt
-		 * the skbs in place before copying plaintext out to user.
-		 */
 			if (is_smt_rpc(rpc) && n > 0) {
 				int smt_err = smt_sw_decrypt(rpc, skbs, n);
 
 				if (smt_err) {
-					struct sk_buff *dump_skb;
-					int dump_i = 0;
+					int dump_i;
 
 					smt_pr_err("smt_sw_decrypt failed %d id %lld n=%d record_len=%d record_offset=%d copied=%d\n",
 						   smt_err, rpc->id, n,
 						   rec_len,
 						   rec_offset,
 						   rec_copied);
-					skb_queue_walk(&rpc->msgin.packets, dump_skb) {
+					for (dump_i = 0; dump_i < n; dump_i++) {
+						struct sk_buff *dump_skb = skbs[dump_i];
 						struct smt_rx_logical_info *info =
 							SMT_RX_INFO(dump_skb);
 
-						printk(KERN_NOTICE "msgin[%d]: skb=%px len=%u start=%d length=%d end=%d record_len=%d\n",
+						smt_pr_err("skbs[%d]: skb=%px len=%u start=%d length=%d end=%d record_len=%d\n",
 						       dump_i, dump_skb, dump_skb->len,
 						       info->start, info->length,
 						       info->end, info->record_data_len);
-						dump_i++;
 					}
 					error = -EBADMSG;
 					goto free_skbs;
@@ -935,7 +931,7 @@ void homa_data_pkt(struct sk_buff *skb, struct homa_rpc *rpc)
 #ifdef CONFIG_SMT
 		if (is_smt_rpc(rpc)) {
 			if (smt_record_complete(rpc, skb)) {
-				smt_pr_info("smt handoff\n");
+				smt_pr_devel("smt handoff\n");
 				set_bit(RPC_PKTS_READY, &rpc->flags);
 				homa_rpc_handoff(rpc);
 			}

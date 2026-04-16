@@ -1,19 +1,5 @@
 // SPDX-License-Identifier: BSD-2-Clause or GPL-2.0+
 
-/* SMT software AES-GCM-128 encrypt/decrypt, modeled on the old HomaModule
- * homals_sw.c. Provides a per-smt_context pool of crypto_aead/aead_request
- * objects borrowed per-RPC, and in-place record encryption/decryption.
- *
- * The record layout on the wire (per Homa GSO unit / per reassembled record)
- * is:
- *
- *   [homa_data_hdr - seg_hdr][smt_h (13B)][seg_hdr][data][seg_hdr][data]
- *     ...[seg_hdr][data][smt_t (16B)]
- *
- * smt_h is the AAD (5B TLS header + 8B explicit nonce/rec_seq) and smt_t is
- * the AES-GCM authentication tag.
- */
-
 #include "smt_impl.h"
 
 #include "homa_peer.h"
@@ -299,9 +285,9 @@ int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb,
 		smt_pr_err("%s: encrypt failed %d\n", __func__, ret);
 		return ret;
 	}
-	// printk(KERN_NOTICE "smt_sw_encrypt: rpc %lld payload_len=%d total_len=%d nsg=%d rec_seq=%*phN\n",
-	//        rpc->id, payload_len, total_len, nsg,
-	//        TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
+	smt_pr_info("smt_sw_encrypt: rpc %lld payload_len=%d total_len=%d nsg=%d rec_seq=%*phN\n",
+	       rpc->id, payload_len, total_len, nsg,
+	       TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
 
 	smt_h[0] = 0x17;
 	smt_h[1] = 0x03;
@@ -390,16 +376,16 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
 		(crypt_len - SMT_RECORD_EXTRA_POST_LENGTH) & 0xff;
 
 	memcpy(r->nonce, r->iv, sizeof(r->nonce));
-	// printk(KERN_NOTICE "smt_sw_decrypt: rpc %lld n=%d crypt_len=%d total_sg_bytes=%d record_start=%d record_len=%d rec_seq=%*phN\n",
-	//        rpc->id, n, crypt_len, total_sg_bytes,
-	//        SMT_RX_INFO(skbs[0])->start, SMT_RX_INFO(skbs[0])->record_data_len,
-	//        TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
+	smt_pr_devel(KERN_NOTICE "smt_sw_decrypt: rpc %lld n=%d crypt_len=%d total_sg_bytes=%d record_start=%d record_len=%d rec_seq=%*phN\n",
+	       rpc->id, n, crypt_len, total_sg_bytes,
+	       SMT_RX_INFO(skbs[0])->start, SMT_RX_INFO(skbs[0])->record_data_len,
+	       TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
 
 	ret = smt_sw_do_crypt(r, sg, sg, crypt_len, false);
 	if (unlikely(ret)) {
-		printk("%s: decrypt failed %d rpc %lld\n",
+		smt_pr_err("%s: decrypt failed %d rpc %lld\n",
 			   __func__, ret, rpc->id);
-		printk("%s: failure crypt_len=%d total_sg_bytes=%d first_skb=%px first_header=%*phN\n",
+		smt_pr_err("%s: failure crypt_len=%d total_sg_bytes=%d first_skb=%px first_header=%*phN\n",
 			   __func__, crypt_len, total_sg_bytes, skbs[0],
 			   SMT_RECORD_EXTRA_PRE_LENGTH, smt_h);
 		return ret;

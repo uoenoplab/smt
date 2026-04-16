@@ -227,8 +227,8 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	homa_info->rpc = rpc;
 	homa_info->dont_defer = false;
 
-	// printk("%s: wire_bytes=%d data_bytes=%d seg_length=%d offset=%d\n", __func__,
-	//        homa_info->wire_bytes, homa_info->data_bytes, homa_info->seg_length, homa_info->offset);
+	smt_pr_devel("%s: wire_bytes=%d data_bytes=%d seg_length=%d offset=%d\n", __func__,
+	       homa_info->wire_bytes, homa_info->data_bytes, homa_info->seg_length, homa_info->offset);
 	smt_pr_devel("%s: segs=%lld homa_data_hdr=%zu ip_hdr=%d eth_overhead=%d\n", __func__,
 	       segs, sizeof(struct homa_data_hdr), hsk->ip_header_length, HOMA_ETH_OVERHEAD);
 
@@ -901,6 +901,7 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 	 */
 	for (skb = rpc->msgout.packets; skb; skb = homa_info->next_skb) {
 		int seg_offset, offset, seg_length, data_left;
+		int extra_ip_id = 0;
 		struct homa_data_hdr *h;
 
 		homa_info = homa_get_skb_info(skb);
@@ -918,12 +919,19 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 		} else {
 			seg_length = homa_info->seg_length;
 			h = (struct homa_data_hdr *)skb_transport_header(skb);
+#ifdef CONFIG_SMT
+			if (is_smt_rpc(rpc))
+				data_left = skb_shinfo(skb)->gso_segs *
+					    seg_length;
+#endif
 		}
 		for ( ; data_left > 0; data_left -= seg_length,
 		     offset += seg_length,
-		     seg_offset += skb_shinfo(skb)->gso_size) {
+		     seg_offset += skb_shinfo(skb)->gso_size,
+		     extra_ip_id++) {
 			struct homa_skb_info *new_homa_info;
 			struct sk_buff *new_skb;
+			int linear_len, append_off, append_len;
 			int err;
 
 			if (seg_length > data_left)
@@ -945,15 +953,30 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 				UNIT_LOG("; ", "skb allocation error");
 				goto resend_done;
 			}
+			linear_len = sizeof(struct homa_data_hdr);
+			append_off = seg_offset;
+			append_len = seg_length;
+#ifdef CONFIG_SMT
+			if (is_smt_rpc(rpc)) {
+				linear_len -= sizeof(struct homa_seg_hdr);
+				append_off -= sizeof(struct homa_seg_hdr);
+				append_len += sizeof(struct homa_seg_hdr);
+			}
+#endif
 			h = __skb_put_data(new_skb, skb_transport_header(skb),
-					   sizeof(struct homa_data_hdr));
+					   linear_len);
 			h->common.sequence = htonl(offset);
-			h->seg.offset = htonl(offset);
 			h->retransmit = 1;
+#ifdef CONFIG_SMT
+			if (is_smt_rpc(rpc))
+				h->retransmit |= (extra_ip_id & 0x0f) << 4;
+			else
+#endif
+				h->seg.offset = htonl(offset);
 			IF_NO_STRIP(h->incoming = htonl(end));
 			err = homa_skb_append_from_skb(rpc->hsk->homa, new_skb,
-						       skb, seg_offset,
-						       seg_length);
+						       skb, append_off,
+						       append_len);
 			if (err != 0) {
 				pr_err("%s got error %d from homa_skb_append_from_skb\n",
 				       __func__, err);

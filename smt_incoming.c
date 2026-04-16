@@ -17,47 +17,45 @@ struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,
 	info.end = info.start + info.length;
 	info.trailer_only = smt_trailer_only(skb, ip_id);
 
-	/* Calculate record info only for the first packet of a record */
-	if (ip_id == 0) {
-		u8 *smt_header;
-		int record_len, max_frame_data;
+	if (ip_id != 0)
+		goto out;
 
-		info.record_data_offset = info.start;
+	u8 *smt_header;
+	int record_len, max_frame_data;
 
-		if (skb->len - skb_transport_offset(skb) < SMT_RECORD_EXTRA_PRE_LENGTH) {
-			info.record_data_len = -1;
-			goto out;
-		}
+	info.record_data_offset = info.start;
 
-		smt_header = skb_transport_header(skb)
-			+ sizeof(struct homa_data_hdr) - sizeof(struct homa_seg_hdr);
-
-		/* Validate TLS record header */
-		if ((smt_header[0] != 0x17) || (smt_header[1] != 0x03) ||
-		    (smt_header[2] != 0x03)) {
-			info.record_data_len = -1;
-			goto out;
-		}
-
-		record_len = (smt_header[3] << 8) | (smt_header[4] & 0xff);
-		if (record_len <= 0) {
-			info.record_data_len = -1;
-			goto out;
-		}
-
-		info.record_data_len = record_len + TLS_HEADER_SIZE -
-				       SMT_RECORD_EXTRA_POST_LENGTH;
-		max_frame_data = SMT_RPC(rpc)->smt_max_pkt_data +
-				 sizeof(struct homa_seg_hdr);
-		info.record_data_len -= ((info.record_data_len + max_frame_data - 1) /
-					 max_frame_data) * sizeof(struct homa_seg_hdr);
-		info.record_data_len -= SMT_RECORD_EXTRA_PRE_LENGTH;
-	} else {
-		info.record_data_len = -1;
-		info.record_data_offset = -1;
+	if (skb->len - skb_transport_offset(skb) < SMT_RECORD_EXTRA_PRE_LENGTH) {
+		goto out;
 	}
 
+	smt_header = skb_transport_header(skb)
+		+ sizeof(struct homa_data_hdr) - sizeof(struct homa_seg_hdr);
+
+	/* Validate TLS record header */
+	if ((smt_header[0] != 0x17) || (smt_header[1] != 0x03) ||
+		(smt_header[2] != 0x03)) {
+		goto out;
+	}
+
+	record_len = (smt_header[3] << 8) | (smt_header[4] & 0xff);
+	if (record_len <= 0) {
+		goto out;
+	}
+
+	info.record_data_len = record_len + TLS_HEADER_SIZE -
+				SMT_RECORD_EXTRA_POST_LENGTH;
+	max_frame_data = SMT_RPC(rpc)->smt_max_pkt_data +
+				sizeof(struct homa_seg_hdr);
+	info.record_data_len -= ((info.record_data_len + max_frame_data - 1) /
+					max_frame_data) * sizeof(struct homa_seg_hdr);
+	info.record_data_len -= SMT_RECORD_EXTRA_PRE_LENGTH;
+
+	return info;
+
 out:
+	info.record_data_offset = -1;
+	info.record_data_len = -1;
 	SMT_TIME_END(smt_rx_calc, __t);
 	return info;
 }
