@@ -1300,6 +1300,17 @@ int homa_sendmsg(struct sock *sk, struct msghdr *msg, size_t length)
 		SMT_TIME_END(homa_message_out_fill, __t2);
 		if (result)
 			goto error;
+#ifdef CONFIG_SMT_MOCK_RESEND
+		if (is_smt_rpc(rpc)) {
+			int mock_end = rpc->msgout.length + (1 << 20);
+			pr_info("smt_mock_resend: rpc %llu msg_len=%d — invoking homa_resend_data(0..%d)\n",
+				rpc->id, rpc->msgout.length, mock_end);
+			homa_resend_data(rpc, 0, mock_end, 0);
+			pr_info("smt_mock_resend: rpc %llu done\n", rpc->id);
+			result = -ECANCELED;
+			goto error;
+		}
+#endif
 		args.id = rpc->id;
 		homa_rpc_unlock(rpc); /* Locked by homa_rpc_alloc_client. */
 
