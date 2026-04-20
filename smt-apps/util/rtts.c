@@ -11,7 +11,6 @@ static int compare_doubles(const void* a, const void* b) {
 #define PRIMARY_BIN_MAX 50000
 #define DATA_DECIMAL_PRECISION 100  // For 0.01us precision
 
-// Function to create and initialize the histogram
 struct histogram create_histogram(void) {
   struct histogram hist;
   hist.primary_size = PRIMARY_BIN_MAX * DATA_DECIMAL_PRECISION;
@@ -33,7 +32,6 @@ struct histogram create_histogram_with_preheat(int preheat) {
   return hist;
 }
 
-// Function to add data to the histogram
 void add_data(struct histogram *hist, double data) {
   if (hist->preheat > 0) {
     hist->preheat--;
@@ -43,7 +41,7 @@ void add_data(struct histogram *hist, double data) {
     size_t index = (size_t)(data * DATA_DECIMAL_PRECISION);
     hist->primary_bins[index]++;
   } else {
-    log_trace("overflow datapoint inserted (%.2lf)", data);
+    log_debug("overflow datapoint inserted (%.2lf)", data);
     if (hist->overflow_size >= hist->overflow_capacity) {
       hist->overflow_capacity = hist->overflow_capacity > 0 ? hist->overflow_capacity * 2 : 1;
       hist->overflow_numbers = realloc(hist->overflow_numbers, hist->overflow_capacity * sizeof(double));
@@ -78,18 +76,15 @@ void merge_overflow(struct histogram *dest, double *overflow_data, size_t overfl
   dest->overflow_size += overflow_size;
 }
 
-// Function to merge multiple histograms into a single histogram
 void merge_histograms(struct histogram *dest, struct histogram *srcs, size_t num_srcs) {
   for (size_t i = 0; i < num_srcs; i++) {
     struct histogram *src = &srcs[i];
-    // Accumulate the total data points from all histograms
     dest->total_data_points += src->total_data_points;
     dest->total_req_size += src->total_req_size;
     dest->total_resp_size += src->total_resp_size;
     for (size_t j = 0; j < src->primary_size; j++) {
       dest->primary_bins[j] += src->primary_bins[j];
     }
-    // Merge overflow data directly
     merge_overflow(dest, src->overflow_numbers, src->overflow_size);
   }
 }
@@ -97,12 +92,12 @@ void merge_histograms(struct histogram *dest, struct histogram *srcs, size_t num
 void free_histogram(struct histogram *hist) {
   if (hist->primary_bins != NULL) {
     free(hist->primary_bins);
-    hist->primary_bins = NULL;  // Prevent use-after-free
+    hist->primary_bins = NULL;
   }
   hist->primary_size = 0;
   if (hist->overflow_numbers != NULL) {
     free(hist->overflow_numbers);
-    hist->overflow_numbers = NULL;  // Prevent use-after-free
+    hist->overflow_numbers = NULL;
   }
   hist->overflow_size = 0;
   hist->overflow_capacity = 0;
@@ -118,14 +113,12 @@ double calculate_average(struct histogram *hist) {
   if (hist->total_data_points == 0)
     return sum;
 
-  // Sum all times from the primary bins
   for (size_t i = 0; i < hist->primary_size; i++) {
     if (hist->primary_bins[i] > 0) {
       sum += i / (double)DATA_DECIMAL_PRECISION * hist->primary_bins[i];
     }
   }
 
-  // Sum all times from the overflow bins
   for (size_t i = 0; i < hist->overflow_size; i++) {
     sum += hist->overflow_numbers[i];
   }
@@ -163,22 +156,18 @@ double calculate_stddev(struct histogram *hist, double *precalc_avg) {
     return sqrt(variance);
 }
 
-// Function to calculate a percentile
 void calculate_percentiles(struct histogram *hist, double percentiles[], double results[], size_t num_percentiles) {
   size_t total_count = hist->total_data_points;
 
-  // Sort overflow bins if necessary
   if (hist->overflow_size > 0) {
     qsort(hist->overflow_numbers, hist->overflow_size, sizeof(double), compare_doubles);
   }
 
-  // Calculate each requested percentile
   for (size_t p = 0; p < num_percentiles; p++) {
     size_t target_count = (size_t)(total_count * percentiles[p] / 100.0);
     size_t cumulative_count = 0;
     size_t i;
 
-    // Check primary bins first
     for (i = 0; i < hist->primary_size; i++) {
       cumulative_count += hist->primary_bins[i];
       if (cumulative_count >= target_count) {
@@ -187,7 +176,6 @@ void calculate_percentiles(struct histogram *hist, double percentiles[], double 
       }
     }
 
-    // Check overflow bins if necessary
     if (i == hist->primary_size && hist->overflow_size > 0) {
       for (size_t j = 0; j < hist->overflow_size; j++) {
         cumulative_count++;

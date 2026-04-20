@@ -1,10 +1,171 @@
-// NOTE: DISABLE_UTIL_PROTOCOL must be defined to avoid macro divergence
-//       between utils.o and protocol-dependent executables
-#define DISABLE_UTIL_PROTOCOL
 #include "utils.h"
 
-int verbose_level = 0; // -1 for quiet, 0 for normal, 1 for verbose, 2 for hexdump
+int verbose_level = 0;
 volatile sig_atomic_t sigint_received = 0;
+
+// protocols //
+
+const char *const protocol_names[ECHO_PROTO_NUM] = {
+  [ECHO_HOMA]     = "homa",
+  [ECHO_SMT]      = "smt",
+  [ECHO_TCP]      = "tcp",
+  [ECHO_TCP_KTLS] = "tcp_ktls",
+};
+
+_Static_assert(sizeof(protocol_names) / sizeof(protocol_names[0]) == ECHO_PROTO_NUM,
+               "protocol_names[] and Protocol enum must match");
+
+int parse_protocol(const char *protocol_name) {
+  for (int i = 0; i < ECHO_PROTO_NUM; i++) {
+    if (strcmp(protocol_name, protocol_names[i]) == 0) return i;
+  }
+  return -1;
+}
+
+void print_protocol_names(void) {
+  fprintf(stderr, "Unsupported protocol! (Choose from ");
+  for (int i = 0; i < ECHO_PROTO_NUM; i++) {
+    fprintf(stderr, "%s", protocol_names[i]);
+    if (i != ECHO_PROTO_NUM - 1) fprintf(stderr, ", ");
+  }
+  fprintf(stderr, ")\n");
+}
+
+// protocols //
+
+// hexdump / payload / pin_core //
+
+void hexdump(const char *title, void *buf, size_t len) {
+  if (verbose_level != 3) return;
+  printf("%s (%lu bytes) :\n", title, len);
+  for (size_t i = 0; i < len; i++) {
+    printf("%02hhX ", ((uint8_t *)buf)[i]);
+    if (i % 16 == 15) printf("\n");
+  }
+  printf("\n");
+}
+
+void hexdump_iov(const char *title, struct iovec *vecs, size_t vecs_len) {
+  if (verbose_level != 3) return;
+  printf("%s (%lu vecs):\n", title, vecs_len);
+  for (size_t i = 0; i < vecs_len; i++) {
+    char subtitle[32];
+    snprintf(subtitle, sizeof(subtitle), "vec[%zu]", i);
+    hexdump(subtitle, vecs[i].iov_base, vecs[i].iov_len);
+  }
+}
+
+void setup_payload_buffer(uint8_t *buf, size_t len) {
+  char *env = getenv("HOMA_ECHO_PAYLOAD");
+  if (env && strcmp(env, "mod") == 0) {
+    log_info("HOMA_ECHO_PAYLOAD is set to mod, using mod 256");
+    for (size_t i = 0; i < len; i++) {
+      buf[i] = i % 256;
+    }
+  } else if (env && strcmp(env, "random") == 0) {
+    log_info("HOMA_ECHO_PAYLOAD is set to random, using /dev/urandom");
+    FILE *fp = fopen("/dev/urandom", "r");
+    if (fp) {
+      size_t bytes_read = fread(buf, 1, len, fp);
+      if (bytes_read != len) {
+        log_fatal("Failed to read from /dev/urandom");
+        fclose(fp);
+        exit(EXIT_FAILURE);
+      }
+      fclose(fp);
+    } else {
+      log_fatal("Failed to open /dev/urandom");
+      exit(EXIT_FAILURE);
+    }
+  } else if (!env || (env && strcmp(env, "fixed") == 0)) {
+    log_info("HOMA_ECHO_PAYLOAD is not set or fixed, using fixed char");
+    for (size_t i = 0; i < len; i++) {
+      buf[i] = '?';
+    }
+  } else {
+    log_fatal("Invalid HOMA_ECHO_PAYLOAD env var (%s), should be fixed or mod", env);
+    exit(EXIT_FAILURE);
+  }
+}
+
+void pin_core(int core, pthread_attr_t *attr, pthread_t thread) {
+  bool core_valid;
+
+  if (core == 0) {
+    core_valid = true;
+  } else {
+    char path[64];
+    FILE *fp;
+    char status[2] = {0};
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/online", core);
+    fp = fopen(path, "r");
+    if (fp == NULL) {
+      core_valid = false;
+    } else {
+      if (fread(status, 1, 1, fp) < 1) {
+        core_valid = false;
+      } else {
+        core_valid = (status[0] == '1');
+      }
+      fclose(fp);
+    }
+  }
+
+  if (!core_valid) {
+    log_fatal("core (%d) to pin doesn't exist or offline", core);
+    exit(EXIT_FAILURE);
+  }
+
+  cpu_set_t cpus;
+  CPU_ZERO(&cpus);
+  CPU_SET(core, &cpus);
+
+  if (attr != NULL) {
+    if (pthread_attr_setaffinity_np(attr, sizeof(cpu_set_t), &cpus) != 0) {
+      log_fatal("pthread_attr_setaffinity_np failed (error %s)", strerror(errno));
+      exit(EXIT_FAILURE);
+    }
+  } else {
+    if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpus) != 0) {
+      log_fatal("pthread_setaffinity_np failed (error %s)", strerror(errno));
+      exit(EXIT_FAILURE);
+    }
+  }
+}
+
+// hexdump / payload / pin_core //
+
+// main thread receive SIGINT and start join threads
+static void sigint_handler(int signum __attribute__((unused))) {
+  sigint_received = 1;
+}
+
+// threads receive USR1 and exit, SIGINT will be masked out
+static void sigusr1_handler(int signum __attribute__((unused))) {
+  pthread_exit(EXIT_SUCCESS);
+}
+
+void setup_sigaction(void) {
+  if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+    fprintf(stderr, "Could not SIG_IGN for SIGPIPE (error %s)\n", strerror(errno));
+  }
+
+  struct sigaction sa_sigint = { 0 };
+  sa_sigint.sa_handler = sigint_handler;
+  sa_sigint.sa_flags = 0;
+  if (sigaction(SIGINT, &sa_sigint, NULL)) {
+    fprintf(stderr, "Could not setup signal handler for SIGINT (error %s)\n", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
+
+  struct sigaction sa_sigusr1 = { 0 };
+  sa_sigusr1.sa_handler = sigusr1_handler;
+  sa_sigusr1.sa_flags = 0;
+  if (sigaction(SIGUSR1, &sa_sigusr1, NULL)) {
+    fprintf(stderr, "Could not setup signal handler for SIGUSR1 (error %s)\n", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
+}
 
 // google workload //
 
@@ -229,8 +390,7 @@ static const unsigned int crc_table[256] = {
 #define CRCDO4(buf)  CRCDO2(buf); CRCDO2(buf);
 #define CRCDO8(buf)  CRCDO4(buf); CRCDO4(buf);
 
-static unsigned int crc32(const unsigned char *buffer, unsigned int len)
-{
+static unsigned int crc32(const unsigned char *buffer, unsigned int len) {
 	return 0;
 	unsigned int crc;
 	crc = 0;

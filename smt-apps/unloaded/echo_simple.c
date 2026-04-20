@@ -49,8 +49,8 @@ void print_help(char *prog_name, bool is_server) {
   if (!is_server) {
   printf("  -n, --num-rtts <count>            Optional: stop after <count> round trips (default: stop with Ctrl-C).\n");
   }
-  printf("  -x, --hexdump                     Enable hexdump output, enable -v also if set.\n");
-  printf("  -v, --verbose                     Enable verbose output with log_c LOG_TRACE level, else log_c LOG_INFO level as default. \n");
+  printf("  -v, --verbose                     Increase log level; repeat for more detail.\n");
+  printf("                                      (default: info; -v: debug; -vv: trace; -vvv: trace + hexdump)\n");
   printf("  -q, --quiet                       Disable all normal output with log_c LOG_WARN level\n");
   printf("  -h, --help                        Display this help and exit\n");
   printf("\n");
@@ -75,7 +75,6 @@ void parse_args(int argc, char *argv[], bool is_server) {
     // common
     {"payload-size", required_argument, 0, 'l'},
     {"num-rtts", required_argument, 0, 'n'},
-    {"hexdump", no_argument, 0, 'x'},
     {"verbose", no_argument, 0, 'v'},
     {"quiet", no_argument, 0, 'q'},
     {"help", no_argument, 0, 'h'},
@@ -91,7 +90,7 @@ void parse_args(int argc, char *argv[], bool is_server) {
   struct hostent *server_hostent;
   bool server_ipaddr_set = false;
 
-  while ((opt = getopt_long(argc, argv, "r:a:p:l:n:xvqh", long_options, &option_index)) != -1) {
+  while ((opt = getopt_long(argc, argv, "r:a:p:l:n:vqh", long_options, &option_index)) != -1) {
     switch (opt) {
       case 'r':
         protocol = parse_protocol(optarg);
@@ -145,17 +144,13 @@ void parse_args(int argc, char *argv[], bool is_server) {
         }
         num_max_rtts = (uint64_t)parsed;
         break;
-      case 'x':
-        verbose_level = 3;
-        break;
       case 'v':
-        if (verbose_level != 3) {
-          verbose_level = 2;
-        }
+        // each -v bumps one level: -v=debug, -vv=trace, -vvv=trace+hexdump
+        if (verbose_level < 3) verbose_level++;
         break;
       case 'q':
         if (verbose_level != 0) {
-          log_fatal("--quiet can not be used with --verbose or --hexdump");
+          log_fatal("--quiet can not be used with --verbose");
           exit(EXIT_FAILURE);
         }
         verbose_level = -1;
@@ -211,9 +206,7 @@ void parse_args(int argc, char *argv[], bool is_server) {
       printf("  \"num_rtts\": \"Stop with Ctrl-C\",\n");
     }
   }
-  char verbose_level_str[32];
-  get_verbose_level_str(verbose_level, verbose_level_str);
-  printf("  \"verbose_level\": %s\n", verbose_level_str);
+  printf("  \"verbose_level\": %s\n", get_verbose_level_str(verbose_level));
   printf("}\n");
   printf("%s", is_server ? server_config_line : client_config_line);
   printf("\n");

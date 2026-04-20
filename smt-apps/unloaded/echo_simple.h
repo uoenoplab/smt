@@ -16,7 +16,6 @@
 
 // variables and structs //
 
-#define DEFAULT_SERVER_BIND "0.0.0.0"
 #define HOMA_BPAGE_NUM 4000 // 64KB * 4000 -> 256MB
 #define RTT_PREHEAT 2
 
