@@ -23,6 +23,14 @@ make
 
 See `make help` for more details.
 
+## Load the module
+
+```
+insmod homa.ko
+```
+
+For virtio, run `sudo sysctl net.homa.gso_force_software=1` to force GSO instead of TSO.
+
 ## Build the unloaded microbenchmark apps
 
 ```
