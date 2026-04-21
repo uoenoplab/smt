@@ -34,3 +34,5 @@ saved_traces/
 *.mod.c
 Module.symvers
 modules.order
+
+.vscode/

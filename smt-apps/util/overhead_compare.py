@@ -81,11 +81,11 @@ def reload_module(server, client):
         ssh(node, "pkill -f simple_server; pkill -f simple_client; sleep 1", check=False)
     t0 = time.time()
     ssh(server, "homa-load")
-    ssh(server, "/root/SMT-NG/smt-apps/util/config_unloaded -i ens1f1np1 -a 192.168.12.1/24 -k /usr/src/linux-headers-6.14.0-fab/ -m homa", check=False)
+    ssh(server, "/root/SMT-NG/smt-apps/util/config_unloaded -i ens1f1np1 -a 192.168.12.1/24 -m homa", check=False)
     print(f"  [reload] {server} took {time.time()-t0:.1f}s", flush=True)
     t0 = time.time()
     ssh(client, "homa-load")
-    ssh(client, "/root/SMT-NG/smt-apps/util/config_unloaded -i ens1f1np1 -a 192.168.12.2/24 -k /usr/src/linux-headers-6.14.0-fab/ -m homa", check=False)
+    ssh(client, "/root/SMT-NG/smt-apps/util/config_unloaded -i ens1f1np1 -a 192.168.12.2/24 -m homa", check=False)
     print(f"  [reload] {client} took {time.time()-t0:.1f}s", flush=True)
     print("  reload done", flush=True)
 

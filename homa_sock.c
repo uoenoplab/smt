@@ -421,10 +421,6 @@ void homa_sock_destroy(struct sock *sk)
 	if (!hsk->homa)
 		return;
 
-#ifdef CONFIG_SMT
-	smt_sock_destroy(hsk);
-#endif
-
 	tt_record1("Starting to destroy socket %d", hsk->port);
 	while (!list_empty(&hsk->dead_rpcs)) {
 		homa_rpc_reap(hsk, true);
@@ -436,6 +432,10 @@ void homa_sock_destroy(struct sock *sk)
 		}
 #endif /* See strip.py */
 	}
+
+#ifdef CONFIG_SMT
+	smt_sock_destroy(hsk);
+#endif
 
 	WARN_ON_ONCE(refcount_read(&hsk->sock.sk_wmem_alloc) != 1);
 #ifdef __UNIT_TEST__

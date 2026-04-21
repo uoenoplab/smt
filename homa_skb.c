@@ -379,7 +379,8 @@ int homa_skb_append_from_iter(struct homa *homa, struct sk_buff *skb,
  * Return:       0 for success or a negative errno if an error occurred.
  */
 int homa_skb_append_from_skb(struct homa *homa, struct sk_buff *dst_skb,
-			     struct sk_buff *src_skb, int offset, int length)
+			     struct sk_buff *src_skb, int offset, int length,
+			     int dst_linear_reserve)
 {
 	int src_frag_offset, src_frags_left, chunk_size, err, head_len;
 	struct skb_shared_info *src_shinfo = skb_shinfo(src_skb);
@@ -392,11 +393,18 @@ int homa_skb_append_from_skb(struct homa *homa, struct sk_buff *dst_skb,
 		chunk_size = length;
 		if (chunk_size > (head_len - offset))
 			chunk_size = head_len - offset;
-		err = homa_skb_append_to_frag(homa, dst_skb,
-					      skb_transport_header(src_skb) + offset,
-					      chunk_size);
-		if (err)
-			return err;
+		if (dst_linear_reserve > 0) {
+			BUG_ON(dst_linear_reserve < chunk_size);
+			__skb_put_data(dst_skb,
+				       skb_transport_header(src_skb) + offset,
+				       chunk_size);
+		} else {
+			err = homa_skb_append_to_frag(homa, dst_skb,
+				skb_transport_header(src_skb) + offset,
+				chunk_size);
+			if (err)
+				return err;
+		}
 		offset += chunk_size;
 		length -= chunk_size;
 	}

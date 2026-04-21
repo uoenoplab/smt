@@ -3,7 +3,8 @@
 set -euo pipefail
 
 # Prepare a host for SMT/Homa loaded microbenchmarks.
-# Usage: sudo ./configure_loaded [-i IFNAME] [-k KERNEL_SRC] [-m MODE]
+# Reloads the SMT/Homa kernel module, assigns IPs, tunes NIC/sysctl.
+# Usage: sudo ./config_loaded [-i IFNAME] [-a IPADDR] [-b IPADDR_SECOND] [-m MODE]
 
 if [[ $EUID -ne 0 ]]; then
   echo "[!] This script must be run as root" >&2
@@ -11,35 +12,33 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-smt_root="$(cd -- "${script_dir}/../.." && pwd)"
+repo_root="$(cd -- "${script_dir}/../.." && pwd)"
 
 : "${IFNAME:=}"
-: "${KERNEL_SRC:=}"
 : "${MODE:=}"
 : "${IPADDR_PRIMARY:=}"
 : "${IPADDR_SECOND:=}"
 
 usage() {
   cat <<'EOF'
-Usage: sudo ./configure_loaded [-i IFNAME] [-k KERNEL_SRC] [-m MODE]
+Usage: sudo ./config_loaded [-i IFNAME] [-a IPADDR] [-b IPADDR_SECOND] [-m MODE]
   -i IFNAME        NIC interface name (e.g., ens1f1np1). Will prompt if unset.
-  -k KERNEL_SRC    Kernel source tree path for mlx5 reload (e.g., /usr/src/linux-source-6.2.0/linux-source-6.2.0). Will prompt if unset.
-  -a IPADDR        Primary IP address (CIDR) to assign to IFNAME after reload (e.g., 10.0.0.1/24). Will prompt if unset.
-  -b IPADDR_SECOND Secondary IP (CIDR) to multi-home SMT/Homa/SDP (e.g., 10.0.1.1/24). Required for homa/smt-* modes; optional/ignored for TCP/kTLS.
-  -m MODE          One of: tcp, ktls-sw, ktls-hw, homa, smt-sw, smt-hw. Will prompt if unset.
+  -a IPADDR        Primary IP (CIDR) to assign to IFNAME (e.g., 10.0.0.1/24). Will prompt if unset.
+  -b IPADDR_SECOND Secondary IP (CIDR) to multi-home SMT/Homa (e.g., 10.0.1.1/24).
+                   Required for homa/smt-sw (compensates for Homa's lack of RSS).
+  -m MODE          One of: tcp, ktls-sw, homa, smt-sw. Will prompt if unset.
   -h               Show this help and exit.
 EOF
-  exit 0
+  exit "${1:-1}"
 }
 
-while getopts ":i:k:a:b:m:h" opt; do
+while getopts ":i:a:b:m:h" opt; do
   case "$opt" in
     i) IFNAME="$OPTARG" ;;
-    k) KERNEL_SRC="$OPTARG" ;;
     a) IPADDR_PRIMARY="$OPTARG" ;;
     b) IPADDR_SECOND="$OPTARG" ;;
     m) MODE="$OPTARG" ;;
-    h) usage ;;
+    h) usage 0 ;;
     *) usage ;;
   esac
 done
@@ -59,27 +58,12 @@ if [[ -z "$IFNAME" ]]; then
 fi
 
 if [[ -z "$MODE" ]]; then
-  read -rp "Enter mode (tcp|ktls-sw|ktls-hw|homa|smt-sw|smt-hw): " MODE
+  read -rp "Enter mode (tcp|ktls-sw|homa|smt-sw): " MODE
 fi
 case "$MODE" in
-  tcp|ktls-sw|ktls-hw|homa|smt-sw|smt-hw) ;;
+  tcp|ktls-sw|homa|smt-sw) ;;
   *) echo "[!] Invalid mode: $MODE" >&2; usage ;;
 esac
-
-requires_kernel_src=0
-case "$MODE" in
-  smt-hw) requires_kernel_src=1 ;;
-esac
-
-if [[ $requires_kernel_src -eq 1 ]]; then
-  if [[ -z "$KERNEL_SRC" ]]; then
-    read -rp "Enter kernel source path for mlx5 reload (needed for smt-hw only): " KERNEL_SRC
-  fi
-  if [[ -z "$KERNEL_SRC" ]]; then
-    echo "[!] KERNEL_SRC is required for smt-hw" >&2
-    usage
-  fi
-fi
 
 if [[ -z "$IPADDR_PRIMARY" ]]; then
   read -rp "Enter primary IP address (CIDR) to assign to ${IFNAME} (e.g., 10.0.0.1/24): " IPADDR_PRIMARY
@@ -89,7 +73,7 @@ if [[ -z "$IPADDR_PRIMARY" ]]; then
   usage
 fi
 
-if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" ]]; then
   if [[ -z "$IPADDR_SECOND" ]]; then
     read -rp "Enter secondary IP (CIDR) for SMT/Homa (e.g., 10.0.1.1/24): " IPADDR_SECOND
   fi
@@ -99,33 +83,22 @@ if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
   fi
 fi
 
-echo "[+] smt_root=${smt_root}"
 echo "[+] IFNAME=${IFNAME}"
-echo "[+] KERNEL_SRC=${KERNEL_SRC}"
 echo "[+] IPADDR_PRIMARY=${IPADDR_PRIMARY}"
 echo "[+] IPADDR_SECOND=${IPADDR_SECOND:-\"\"}"
 echo "[+] MODE=${MODE}"
 echo "--------------------------------------------------"
-echo "sudo ${BASH_SOURCE[0]} -i ${IFNAME} -k ${KERNEL_SRC} -a ${IPADDR_PRIMARY} ${IPADDR_SECOND:+-b ${IPADDR_SECOND} }-m ${MODE}"
+echo "sudo ${BASH_SOURCE[0]} -i ${IFNAME} -a ${IPADDR_PRIMARY} ${IPADDR_SECOND:+-b ${IPADDR_SECOND} }-m ${MODE}"
 echo "--------------------------------------------------"
 
-if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
-  echo "[+] Reloading smt/homa"
-  rmmod smt 2>/dev/null || rmmod homa 2>/dev/null || true
-  insmod "${smt_root}/module/smt.ko"
-  lsmod | grep smt || true
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" ]]; then
+  echo "[+] Reloading homa module"
+  if lsmod | grep -q '^homa '; then
+    rmmod homa || { echo "[!] rmmod homa failed (still in use?)" >&2; exit 1; }
+  fi
+  insmod "${repo_root}/homa.ko"
+  lsmod | grep -q '^homa ' || { echo "[!] homa not loaded after insmod" >&2; exit 1; }
 fi
-
-if [[ $requires_kernel_src -eq 1 ]]; then
-  echo "[+] Reloading mlx5_core from source (mlx5-smt-patch) for smt-hw"
-  "${smt_root}/mlx5-smt-patch/reload.sh" "$KERNEL_SRC"
-else
-  echo "[+] Reloading mainline mlx5_core via modprobe"
-  "${smt_root}/mlx5-smt-patch/reload.sh" --modprobe
-fi
-
-echo "[+] Waiting 3s for ${IFNAME} to settle after mlx5 reload"
-sleep 3
 
 echo "[+] Resetting IPs on ${IFNAME}"
 ip addr flush dev "$IFNAME"
@@ -136,18 +109,18 @@ if [[ -n "${IPADDR_SECOND}" ]]; then
   ip addr add "$IPADDR_SECOND" dev "$IFNAME"
 fi
 
-if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" ]]; then
   echo "[+] Setting SMT/Homa ntuple steering on ${IFNAME}"
   ethtool -K "$IFNAME" ntuple on || true
   ethtool -X "$IFNAME" default || true
-  ethtool -N "$IFNAME" flow-type ip4 l4proto 0xFD dst-ip "${IPADDR_PRIMARY%/*}" action 0 || true
+  ethtool -N "$IFNAME" flow-type ip4 l4proto 0x92 dst-ip "${IPADDR_PRIMARY%/*}" action 0 || true
   if [[ -n "${IPADDR_SECOND}" ]]; then
-    ethtool -N "$IFNAME" flow-type ip4 l4proto 0xFD dst-ip "${IPADDR_SECOND%/*}" action 2 || true
+    ethtool -N "$IFNAME" flow-type ip4 l4proto 0x92 dst-ip "${IPADDR_SECOND%/*}" action 2 || true
   fi
   ethtool -n "$IFNAME" || true
 fi
 
-if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" || "$MODE" == "ktls-hw" ]]; then
+if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" ]]; then
   echo "[+] Setting TCP indirection table (equal 4) on ${IFNAME}"
   ethtool -X "$IFNAME" equal 4 || true
 fi
@@ -159,36 +132,27 @@ echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo || echo 1 > /sys/devices/
 echo "[+] Setting NIC coalesce on ${IFNAME}"
 ethtool -C "$IFNAME" adaptive-rx off rx-usecs 5 rx-frames 1
 
-if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+echo "[+] Disabling NIC TLS TX offload on ${IFNAME}"
+ethtool -K "$IFNAME" tls-hw-tx-offload off || true
+
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" ]]; then
   echo "[+] Applying Homa sysctls"
   sysctl /net/homa/link_mbps=100000
   sysctl /net/homa/unsched_bytes=60000
   sysctl /net/homa/max_incoming=480000
   sysctl /net/homa/num_priorities=8
   sysctl /net/homa/max_gso_size=10000
-  sysctl net.homa.smt_hardware_interface="$IFNAME"
 fi
 
-echo "[+] Setting IRQ affinity policy (allnuma) on ${IFNAME} (pin each NIC IRQ to each core)"
-"${smt_root}/bench/util/config_queues" -i "$IFNAME" -m allnuma
+echo "[+] Setting IRQ affinity policy (allnuma) on ${IFNAME}"
+"${script_dir}/config_queues" -i "$IFNAME" -m allnuma
 
-if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" || "$MODE" == "ktls-hw" ]]; then
+if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" ]]; then
   echo "[+] Disable RPS on ${IFNAME}"
-  "${smt_root}/bench/util/config_rps" no_rps "$IFNAME"
+  "${script_dir}/config_rps" no_rps "$IFNAME"
 else
   echo "[+] Enable RPS on ${IFNAME}"
-  "${smt_root}/bench/util/config_rps" "$IFNAME"
+  "${script_dir}/config_rps" "$IFNAME"
 fi
 
-case "$MODE" in
-  ktls-hw|smt-hw)
-    echo "[+] Enable NIC TLS TX offload on ${IFNAME}"
-    ethtool -K "$IFNAME" tls-hw-tx-offload on || true
-    ;;
-  ktls-sw|smt-sw)
-    echo "[+] Disable NIC TLS TX offload on ${IFNAME}"
-    ethtool -K "$IFNAME" tls-hw-tx-offload off || true
-    ;;
-esac
-
-echo "[+] Done. Ready to run bench/loaded binaries."
+echo "[+] Done. Ready to run loaded binaries."

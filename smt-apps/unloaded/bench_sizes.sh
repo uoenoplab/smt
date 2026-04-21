@@ -4,7 +4,6 @@
 set -euxo pipefail
 
 REPO=/root/SMT-NG
-KDIR=/usr/src/linux-headers-6.17.8-mainline-fab
 DUR=${1:-8}
 CSV=${2:-bench_results.csv}
 SIZES=(64 128 256 512 1024 2048 4096 8192 16384 32768 65536 100000 320000 500000 640000)
@@ -15,8 +14,8 @@ echo "mode,size,total_rpcs,kops_per_second,tx_mbps,rx_mbps,avg_rtt_us,p50_rtt_us
 
 run_sweep() {
   local mode=$1 proto=${PROTO[$1]}
-  ssh n08 "$REPO/smt-apps/util/config_unloaded -i ens1f1np1 -a 192.168.12.1/24 -k $KDIR -m ${mode%-nocrypto}" >&2
-  ssh n09 "$REPO/smt-apps/util/config_unloaded -i ens1f1np1 -a 192.168.12.2/24 -k $KDIR -m ${mode%-nocrypto}" >&2
+  ssh n08 "$REPO/smt-apps/util/config_unloaded -i ens1f1np1 -a 192.168.12.1/24 -m ${mode%-nocrypto}" >&2
+  ssh n09 "$REPO/smt-apps/util/config_unloaded -i ens1f1np1 -a 192.168.12.2/24 -m ${mode%-nocrypto}" >&2
   for size in "${SIZES[@]}"; do
     echo "=== $mode size=$size ===" >&2
     ssh n08 "pkill -x simple_server 2>/dev/null; true"

@@ -32,13 +32,14 @@ void print_help(char *prog_name, bool is_server) {
   printf("\t%s: TCP (listen port must be a single port)\n", protocol_names[ECHO_TCP]);
   printf("\t%s: TCP with Kernel TLS (listen port must be a single port)\n", protocol_names[ECHO_TCP_KTLS]);
   printf("\t%s: Homa\n", protocol_names[ECHO_HOMA]);
-  printf("\t%s: SMT\n", protocol_names[ECHO_SMT]);
+  printf("\t%s: SMT (built on Homa)\n", protocol_names[ECHO_SMT]);
   if (is_server) {
-  printf("  -p, --listen-port <port>          Specify a listen port (e.g. 2000).\n");
+    printf("  -p, --listen-port <port>          Specify a listen port (e.g. 2000).\n");
   } else {
-  printf("  -a, --server-address <address>    Specify the server IP address.\n");
-  printf("  -p, --server-port <ports>         Specify a server port (e.g. 2000).\n");
+    printf("  -a, --server-address <address>    Specify the server IP address.\n");
+    printf("  -p, --server-port <ports>         Specify a server port (e.g. 2000).\n");
   }
+
   if (is_server) {
   printf("  -l, --payload-size <optval>       Specify the maximum payload size server can handle (bytes):\n");
   } else {

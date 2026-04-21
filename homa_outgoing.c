@@ -945,37 +945,6 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 			}
 #endif
 		}
-#ifdef CONFIG_SMT_MOCK_RESEND
-		if (smt_multi_seg) {
-			/* Dump entire old big_skb once, with per-gso-seg
-			 * separators so each segment's boundary is clear.
-			 */
-			int tot = skb->len - skb_transport_offset(skb);
-			int doff = sizeof(struct homa_data_hdr) -
-				   sizeof(struct homa_seg_hdr);
-			int gso = skb_shinfo(skb)->gso_size;
-			u8 *obuf = kmalloc(tot, GFP_ATOMIC);
-
-			if (obuf &&
-			    !skb_copy_bits(skb, skb_transport_offset(skb),
-					   obuf, tot)) {
-				pr_info("old: --- hdr [0..%d) ---\n", doff);
-				print_hex_dump(KERN_INFO, "old: ",
-					DUMP_PREFIX_OFFSET, 16, 1,
-					obuf, doff, false);
-				for (int _p = doff, _n = 0; _p < tot;
-				     _p += gso, _n++) {
-					int _c = min(gso, tot - _p);
-					pr_info("old: --- seg %d [%d..%d) ---\n",
-						_n, _p, _p + _c);
-					print_hex_dump(KERN_INFO, "old: ",
-						DUMP_PREFIX_OFFSET, 16, 1,
-						obuf + _p, _c, false);
-				}
-			}
-			kfree(obuf);
-		}
-#endif
 		for ( ; data_left > 0; data_left -= seg_length,
 		     offset += seg_length,
 		     seg_offset += skb_shinfo(skb)->gso_size) {
@@ -1019,7 +988,15 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 
 			/* This segment must be retransmitted. */
 #ifndef __STRIP__ /* See strip.py */
-			new_skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr));
+#ifdef CONFIG_SMT
+			if (is_smt_rpc(rpc))
+				new_skb = homa_skb_alloc_tx(
+					sizeof(struct homa_data_hdr) +
+					smt_pad.hdr_len);
+			else
+#endif
+				new_skb = homa_skb_alloc_tx(
+					sizeof(struct homa_data_hdr));
 #else /* See strip.py */
 			new_skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) +
 						    seg_length);
@@ -1063,12 +1040,14 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 					(int)sizeof(struct homa_seg_hdr),
 					smt_trailer_only ? seg_length :
 					seg_length +
+					(int)sizeof(struct homa_seg_hdr),
+					smt_pad.hdr_len +
 					(int)sizeof(struct homa_seg_hdr));
 			} else
 #endif
 			err = homa_skb_append_from_skb(rpc->hsk->homa, new_skb,
 						       skb, seg_offset,
-						       seg_length);
+						       seg_length, 0);
 			if (err != 0) {
 				pr_err("%s got error %d from homa_skb_append_from_skb\n",
 				       __func__, err);
@@ -1077,66 +1056,6 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 				kfree_skb(new_skb);
 				goto resend_done;
 			}
-
-#ifdef CONFIG_SMT_MOCK_RESEND
-			if (is_smt_rpc(rpc)) {
-				u8 rx_ip_id = (h->retransmit >> 4) & 0x0f;
-				u32 rx_gso_off = ((u8)h->pad[0] << 16) |
-						 ((u8)h->pad[1] << 8) |
-						 (u8)h->pad[2];
-				int rx_start = (int)((u32)rx_ip_id *
-						SMT_RPC(rpc)->smt_max_pkt_data
-						+ rx_gso_off);
-				/* Replicate receiver's smt_logical_data_bytes
-				 * so the log shows exactly what the peer would
-				 * decode from this retransmit skb.
-				 */
-				int rx_skb_len = new_skb->len;
-				int rx_eff = rx_skb_len -
-					(rx_ip_id == 0 ?
-					 smt_pad.hdr_len + smt_pad.trl_len : 0);
-				int rx_len;
-				if (rx_eff -
-				    (int)sizeof(struct homa_data_hdr) +
-				    (int)sizeof(struct homa_seg_hdr) >
-				    smt_pad.trl_len)
-					rx_len = rx_eff -
-					    (int)sizeof(struct homa_data_hdr);
-				else
-					rx_len = rx_eff -
-					    (int)sizeof(struct homa_data_hdr) +
-					    (int)sizeof(struct homa_seg_hdr);
-				if (rx_ip_id != 0)
-					rx_start -= smt_pad.hdr_len +
-						    smt_pad.trl_len;
-				pr_info("smt_mock_resend[%d]: logical=[%d..%d) retransmit=0x%02x ip_id=%u gso_off=%u -> rx=[%d..%d) match=%d\n",
-					extra_ip_id,
-					logical_offset,
-					logical_offset + logical_length,
-					h->retransmit, rx_ip_id, rx_gso_off,
-					rx_start, rx_start + rx_len,
-					rx_start == logical_offset &&
-					rx_len == logical_length);
-
-				/* Hexdump new_skb: linear header + frags */
-				print_hex_dump(KERN_INFO, "new_hdr: ",
-					DUMP_PREFIX_OFFSET, 16, 1,
-					new_skb->data, skb_headlen(new_skb),
-					false);
-				for (int fi = 0;
-				     fi < skb_shinfo(new_skb)->nr_frags; fi++) {
-					skb_frag_t *f =
-						&skb_shinfo(new_skb)->frags[fi];
-					print_hex_dump(KERN_INFO, "new_frag: ",
-						DUMP_PREFIX_OFFSET, 16, 1,
-						skb_frag_address(f),
-						skb_frag_size(f), false);
-				}
-
-				kfree_skb(new_skb);
-				continue;
-			}
-#endif
 
 			new_homa_info = homa_get_skb_info(new_skb);
 			new_homa_info->next_skb = rpc->msgout.to_free;
@@ -1154,7 +1073,6 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 			skb_get(new_skb);
 			tt_record3("retransmitting offset %d, length %d, id %d",
 				   offset, seg_length, rpc->id);
-#ifndef CONFIG_SMT_MOCK_RESEND
 #ifndef __STRIP__ /* See strip.py */
 			homa_pacer_check_nic_q(rpc->hsk->homa->pacer, new_skb,
 					       true);
@@ -1162,7 +1080,6 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 #else /* See strip.py */
 			__homa_xmit_data(new_skb, rpc);
 #endif /* See strip.py */
-#endif /* !CONFIG_SMT_MOCK_RESEND */
 			INC_METRIC(resent_packets, 1);
 		}
 	}

@@ -46,8 +46,15 @@ static inline int homa_skb_append_to_frag(struct homa *homa,
 static inline int  homa_skb_append_from_skb(struct homa *homa,
 					    struct sk_buff *dst_skb,
 					    struct sk_buff *src_skb,
-					    int offset, int length)
+					    int offset, int length,
+					    int dst_linear_reserve)
 {
+	if (dst_linear_reserve > 0) {
+		BUG_ON(dst_linear_reserve < length);
+		__skb_put_data(dst_skb,
+			       skb_transport_header(src_skb) + offset, length);
+		return 0;
+	}
 	return homa_skb_append_to_frag(homa, dst_skb,
 			skb_transport_header(src_skb) + offset, length);
 }

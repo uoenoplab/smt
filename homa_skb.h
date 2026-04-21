@@ -102,7 +102,7 @@ int      homa_skb_append_from_iter(struct homa *homa,
 int      homa_skb_append_from_skb(struct homa *homa,
 				  struct sk_buff *dst_skb,
 				  struct sk_buff *src_skb, int offset,
-				  int length);
+				  int length, int dst_linear_reserve);
 int      homa_skb_append_to_frag(struct homa *homa, struct sk_buff *skb,
 				 void *buf, int length);
 void     homa_skb_cache_pages(struct homa *homa, struct page **pages,
