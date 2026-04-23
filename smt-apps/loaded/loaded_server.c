@@ -222,12 +222,18 @@ static ssize_t tcp_reply(struct tcp_rpc *rpc, int bytes_sent) {
 
   bytes_sent = sendmsg(rpc->conn_sockfd, &rpc->send_msg, 0);
   log_debug("sendmsg returned %d", bytes_sent);
-  if ((bytes_sent == 0) ||
-      (bytes_sent == -1 && errno != EAGAIN)) {
-    log_warn("sendmsg fail (ret %d, error %s)", bytes_sent, strerror(errno));
+  if (bytes_sent == -1) {
+    if (errno == EAGAIN)
+      return 0;
+    log_warn("sendmsg fail (ret -1, error %s)", strerror(errno));
     return -1;
   }
-  if (bytes_sent == -1 && errno == EAGAIN)
+  /* sendmsg() can legitimately return 0 when the combined iov_len is 0
+   * (all iovs empty). This happens at benign edge cases in the reply
+   * pipeline under high concurrency; treat it as "nothing sent, try
+   * again on the next epoll wakeup" rather than as a failure.
+   */
+  if (bytes_sent == 0)
     return 0;
   return bytes_sent;
 }

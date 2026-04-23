@@ -1006,10 +1006,11 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 				goto resend_done;
 			}
 #ifdef CONFIG_SMT
-			if (smt_multi_seg)
-				/* Multi-seg SMT wire hdr is 52 bytes; each
-				 * seg's data chunk carries its own seg_hdr
-				 * except trailer-only which omits it.
+			if (is_smt_rpc(rpc))
+				/* SMT wire hdr is 52 bytes (data_hdr minus
+				 * seg_hdr); the seg_hdr ciphertext is
+				 * reinstated in the following append_from_skb
+				 * call via the seg_hdr-reserve.
 				 */
 				h = __skb_put_data(new_skb,
 					skb_transport_header(skb),
@@ -1028,12 +1029,11 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 			h->retransmit = 1;
 			IF_NO_STRIP(h->incoming = htonl(end));
 #ifdef CONFIG_SMT
-			if (is_smt_rpc(rpc))
+			if (is_smt_rpc(rpc)) {
+				bool smt_trailer_only = smt_multi_seg &&
+					seg_length <= smt_pad.trl_len;
+
 				h->retransmit |= (extra_ip_id & 0x0f) << 4;
-			if (smt_multi_seg) {
-				bool smt_trailer_only = false;
-				if (seg_length <= smt_pad.trl_len)
-					smt_trailer_only = true;
 				err = homa_skb_append_from_skb(rpc->hsk->homa,
 					new_skb, skb,
 					seg_offset -

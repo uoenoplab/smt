@@ -231,7 +231,8 @@ void tt_freeze(void)
 	if (atomic_xchg(&tt_frozen, 1) == 0) {
 		tt_record("timetrace frozen");
 		atomic_inc(&tt_freeze_count);
-		pr_err("%s invoked\n", __func__);
+		pr_err("%s invoked from %pS\n", __func__,
+		       __builtin_return_address(0));
 	}
 }
 

@@ -383,11 +383,51 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
 
 	ret = smt_sw_do_crypt(r, sg, sg, crypt_len, false);
 	if (unlikely(ret)) {
-		smt_pr_err("%s: decrypt failed %d rpc %lld\n",
-			   __func__, ret, rpc->id);
-		smt_pr_err("%s: failure crypt_len=%d total_sg_bytes=%d first_skb=%px first_header=%*phN\n",
-			   __func__, crypt_len, total_sg_bytes, skbs[0],
+		smt_pr_err("%s: decrypt failed %d rpc %lld n=%d crypt_len=%d total_sg_bytes=%d\n",
+			   __func__, ret, rpc->id, n, crypt_len,
+			   total_sg_bytes);
+		smt_pr_err("%s: rec_seq=%*phN iv=%*phN nonce=%*phN aad=%*phN\n",
+			   __func__,
+			   (int)TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE,
+			   r->rec_seq,
+			   (int)TLS_CIPHER_AES_GCM_128_SALT_SIZE +
+				(int)TLS_CIPHER_AES_GCM_128_IV_SIZE,
+			   r->iv,
+			   (int)sizeof(r->nonce), r->nonce,
 			   SMT_RECORD_EXTRA_PRE_LENGTH, smt_h);
+		/* Dump per-skb: header (first 48 B after transport) and, for
+		 * the last skb, the trailing 16 B that should be the GCM tag.
+		 * Content comes via skb_copy_bits because bytes may live in
+		 * frags.
+		 */
+		for (i = 0; i < n; i++) {
+			struct sk_buff *skb = skbs[i];
+			int off = SMT_SW_SGVEC_OFFSET;
+			int len = skb->len - off;
+			u8 buf[48];
+			int dump = min(len, (int)sizeof(buf));
+			struct homa_data_hdr *dh =
+				(struct homa_data_hdr *)skb_transport_header(skb);
+			u8 retrans = dh ? dh->retransmit : 0;
+			u32 seq = dh ? ntohl(dh->common.sequence) : 0;
+
+			smt_pr_err("%s: rpc %lld skb[%d] retransmit=0x%02x sequence=%u skb=%px\n",
+				   __func__, rpc->id, i, retrans, seq, skb);
+			if (dump <= 0)
+				continue;
+			if (skb_copy_bits(skb, off, buf, dump) == 0)
+				smt_pr_err("%s: rpc %lld skb[%d] head(%d/%d): %*phN\n",
+					   __func__, rpc->id, i, dump, len,
+					   dump, buf);
+			if (i == n - 1 && len >= 16) {
+				u8 tag[16];
+
+				if (skb_copy_bits(skb, off + len - 16,
+						  tag, 16) == 0)
+					smt_pr_err("%s: rpc %lld skb[%d] tail(16): %*phN\n",
+						   __func__, rpc->id, i, 16, tag);
+			}
+		}
 		return ret;
 	}
 

@@ -26,25 +26,31 @@ SERVER_PORTS_TCP="2000"
 SIZES=(${SIZES:-64 1024 8192})
 RPCS=(${RPCS:-1 25 50 75 100 125 150})
 
-declare -A PROTO=([smt]=smt [tcp]=tcp)
+declare -A PROTO=([smt]=smt [homa]=homa [tcp]=tcp [ktls]=tcp_ktls)
+declare -A CONFIG_MODE=([smt]=smt-sw [homa]=homa [tcp]=tcp [ktls]=ktls-sw)
+multihome_modes="smt homa"       # modes that use -b secondary IP for poor-man's RSS
 
 echo "mode,size,rpcs,trial,total_rpcs,kops_per_second,tx_mbps,rx_mbps,avg_rtt_us,p50_rtt_us,p95_rtt_us,p99_rtt_us" > "$CSV"
 
+is_multihome() {
+  [[ " $multihome_modes " == *" $1 "* ]]
+}
+
 config_hosts() {
-  local mode=$1
-  if [[ "$mode" == "smt" ]]; then
-    ssh n08 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N1_IP/24 -b $N1_IP_ALT/24 -m smt-sw" >&2
-    ssh n09 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N2_IP/24 -b $N2_IP_ALT/24 -m smt-sw" >&2
+  local mode=$1 cfg=${CONFIG_MODE[$mode]}
+  if is_multihome "$mode"; then
+    ssh n08 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N1_IP/24 -b $N1_IP_ALT/24 -m $cfg" >&2
+    ssh n09 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N2_IP/24 -b $N2_IP_ALT/24 -m $cfg" >&2
   else
-    ssh n08 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N1_IP/24 -m tcp" >&2
-    ssh n09 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N2_IP/24 -m tcp" >&2
+    ssh n08 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N1_IP/24 -m $cfg" >&2
+    ssh n09 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N2_IP/24 -m $cfg" >&2
   fi
 }
 
 server_cmd() {
   local mode=$1 size=$2
   local ports nmax
-  if [[ "$mode" == "smt" ]]; then
+  if is_multihome "$mode"; then
     ports=$SERVER_PORTS_HOMA
     nmax=1
   else
@@ -59,7 +65,7 @@ server_cmd() {
 client_cmd() {
   local mode=$1 size=$2 rpcs=$3
   local ports target_args sockets
-  if [[ "$mode" == "smt" ]]; then
+  if is_multihome "$mode"; then
     ports=$SERVER_PORTS_HOMA
     target_args="-a $N1_IP -b $N1_IP_ALT"
     sockets=1
