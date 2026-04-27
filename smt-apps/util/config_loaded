@@ -110,12 +110,14 @@ if [[ -n "${IPADDR_SECOND}" ]]; then
 fi
 
 if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" ]]; then
-  echo "[+] Setting SMT/Homa ntuple steering on ${IFNAME}"
+  : "${NTUPLE_PRI:=0}"
+  : "${NTUPLE_SEC:=2}"
+  echo "[+] Setting SMT/Homa ntuple steering on ${IFNAME} (action $NTUPLE_PRI / $NTUPLE_SEC)"
   ethtool -K "$IFNAME" ntuple on || true
   ethtool -X "$IFNAME" default || true
-  ethtool -N "$IFNAME" flow-type ip4 l4proto 0x92 dst-ip "${IPADDR_PRIMARY%/*}" action 0 || true
+  ethtool -N "$IFNAME" flow-type ip4 l4proto 0x92 dst-ip "${IPADDR_PRIMARY%/*}" action "$NTUPLE_PRI" || true
   if [[ -n "${IPADDR_SECOND}" ]]; then
-    ethtool -N "$IFNAME" flow-type ip4 l4proto 0x92 dst-ip "${IPADDR_SECOND%/*}" action 2 || true
+    ethtool -N "$IFNAME" flow-type ip4 l4proto 0x92 dst-ip "${IPADDR_SECOND%/*}" action "$NTUPLE_SEC" || true
   fi
   ethtool -n "$IFNAME" || true
 fi

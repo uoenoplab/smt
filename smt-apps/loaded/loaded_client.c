@@ -20,6 +20,15 @@ struct thread_args {
   struct histogram rtt_hist;
   struct timespec bench_start;
   struct timespec bench_end;
+  // Per-thread ring of homa_rpc* awaiting (re-)send. The ring is rate-limit
+  // gated so the thread can return to epoll_wait while waiting for the next
+  // token bucket replenishment instead of busy-sleeping inside sendmsg.
+  // Used only by Homa/SMT path; TCP path already gates via epoll.
+  void **pending_ring;
+  int pending_head;
+  int pending_tail;
+  int pending_count;
+  int pending_cap;
 };
 
 // variables and structs //
@@ -248,8 +257,12 @@ static void tcp_init_conn(struct tcp_conn *conn, int num_rpcs,
 
 // add INIT rpcs to send queue (honoring rate limit), then call sendmsg.
 // returns bytes_sent (>0) or -1 for EAGAIN, or 0 if nothing to send.
+// On rate-limit-induced break, *out_wait is updated to the (smallest)
+// seconds-to-next-token across all conns the caller drains; pass NULL to
+// skip. Caller initializes *out_wait = 0 each iteration.
 static int tcp_issue_send_conn(struct tcp_conn *conn,
-                               const struct sockaddr_in *dst) {
+                               const struct sockaddr_in *dst,
+                               double *out_wait) {
   for (int i = 0; i < conn->num_rpcs; i++) {
     if (!client_tcp_send_batch && (conn->rpc_send_pending > 0)) {
       break;
@@ -260,14 +273,12 @@ static int tcp_issue_send_conn(struct tcp_conn *conn,
 
     tcp_setup_rpc_header(rpc);
 
-    // busy-wait on rate limit only while this conn has no other inflight
     double wait = rate_limit_try_send(conn->rate_limit, rpc->hdr.reqlen);
-    while (wait != 0.0 && conn->rpc_send_pending == 0 &&
-           conn->rpc_recv_pending == 0) {
-      wait = rate_limit_try_send(conn->rate_limit, rpc->hdr.reqlen);
-      rate_limit_sleep(wait);
+    if (wait != 0.0) {
+      if (out_wait && (*out_wait == 0.0 || wait < *out_wait))
+        *out_wait = wait;
+      break;
     }
-    if (wait != 0.0) break;
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &rpc->send_time);
     rpc->state = TCP_RPC_SEND;
@@ -493,9 +504,21 @@ static void *thread_tcp(void *arg) {
     add_epoll_event(epoll_fd, conns[i].sockfd, conns[i].events, &conns[i]);
   }
 
+  // After rate-limit defers a send, we record the earliest next-token wait
+  // across all conns this iteration so the next epoll_wait timeout can wake
+  // us (instead of blocking on a reply that may never come for an idle conn).
+  double next_wait_s = 0.0;
+
   while (!sigint_received) {
+    int timeout_ms;
+    if (next_wait_s > 0.0) {
+      timeout_ms = (int)(next_wait_s * 1000.0 + 0.999);
+      if (timeout_ms < 1) timeout_ms = 1;
+    } else {
+      timeout_ms = -1;
+    }
     int event_count = epoll_wait(epoll_fd, events,
-                                 num_sockets_cur_thread + 1, epoll_wait_timeout);
+                                 num_sockets_cur_thread + 1, timeout_ms);
     if (event_count == -1) {
       if (errno == EAGAIN) continue;
       if (errno == EINTR) goto threadloop_end;
@@ -503,6 +526,7 @@ static void *thread_tcp(void *arg) {
       exit(EXIT_FAILURE);
     }
 
+    next_wait_s = 0.0;
     for (int i = 0; i < event_count; i++) {
       struct tcp_conn *conn = events[i].data.ptr;
 
@@ -515,11 +539,6 @@ static void *thread_tcp(void *arg) {
         if (!conn->connected) {
           tcp_connect(conn, dst);
           if (!conn->connected) continue;
-        }
-        while (conn->rpc_recv_pending < conn->num_rpcs) {
-          ret = tcp_issue_send_conn(conn, dst);
-          if (ret <= 0) break;
-          conn->rpc_recv_pending += tcp_handle_send_conn(conn, ret);
         }
       }
       if (events[i].events & EPOLLIN) {
@@ -536,19 +555,27 @@ static void *thread_tcp(void *arg) {
           }
           conn->rpc_recv_pending -= ret;
           num_rpcs_handled += ret;
-          while (conn->rpc_recv_pending < conn->num_rpcs) {
-            ret = tcp_issue_send_conn(conn, dst);
-            if (ret <= 0) break;
-            conn->rpc_recv_pending += tcp_handle_send_conn(conn, ret);
-          }
         }
       }
-      uint32_t new_events = EPOLLHUP;
-      if (conn->rpc_send_pending > 0) new_events |= EPOLLOUT;
-      if (conn->rpc_recv_pending > 0) new_events |= EPOLLIN;
-      if (conn->events != new_events) {
-        conn->events = new_events;
-        mod_epoll_event(epoll_fd, conn->sockfd, conn->events, conn);
+    }
+
+    // Single drain across ALL conns whether we got events or only timer:
+    // ensures a starved (idle, rate-gated) conn always gets a fair retry
+    // when token budget refills, and updates next_wait_s for next epoll.
+    for (int j = 0; j < num_sockets_cur_thread; j++) {
+      struct tcp_conn *cn = &conns[j];
+      if (!cn->connected) continue;
+      while (cn->rpc_recv_pending < cn->num_rpcs) {
+        int r = tcp_issue_send_conn(cn, dst, &next_wait_s);
+        if (r <= 0) break;
+        cn->rpc_recv_pending += tcp_handle_send_conn(cn, r);
+      }
+      uint32_t ne = EPOLLHUP;
+      if (cn->rpc_send_pending > 0) ne |= EPOLLOUT;
+      if (cn->rpc_recv_pending > 0) ne |= EPOLLIN;
+      if (cn->events != ne) {
+        cn->events = ne;
+        mod_epoll_event(epoll_fd, cn->sockfd, cn->events, cn);
       }
     }
   }
@@ -624,15 +651,23 @@ static void homa_reset_rpc(struct homa_rpc *rpc) {
   rpc->recv_time.tv_sec = 0;
 }
 
-static void homa_send_rpc(struct homa_rpc *rpc) {
-  homa_setup_rpc_header(rpc);
-  while (rate_limit_try_send(rpc->sock->rate_limit, rpc->hdr.reqlen) != 0.0) {
-    rate_limit_sleep(
-        rate_limit_try_send(rpc->sock->rate_limit, rpc->hdr.reqlen));
+// Enqueue an rpc onto the per-thread pending ring. Caller has already filled
+// rpc header (homa_setup_rpc_header) so reqlen is final at enqueue time --
+// avoids the random-size workload re-rolling between enqueue and send.
+static void homa_pending_enqueue(struct thread_args *targs,
+                                 struct homa_rpc *rpc) {
+  if (targs->pending_count >= targs->pending_cap) {
+    log_fatal("pending ring overflow (cap=%d)", targs->pending_cap);
+    exit(EXIT_FAILURE);
   }
+  targs->pending_ring[targs->pending_tail] = rpc;
+  targs->pending_tail = (targs->pending_tail + 1) % targs->pending_cap;
+  targs->pending_count++;
+}
 
+// Issue sendmsg for one rpc. send_time is stamped immediately before sendmsg.
+static void homa_actual_send(struct homa_rpc *rpc) {
   clock_gettime(CLOCK_MONOTONIC_RAW, &rpc->send_time);
-
   if (sendmsg(rpc->sock->sockfd, &rpc->send_msghdr, 0) < 0) {
     if (errno == EINTR)
       return;
@@ -641,11 +676,19 @@ static void homa_send_rpc(struct homa_rpc *rpc) {
   }
 }
 
-static void homa_send_all_rpcs(struct homa_sock *ctx) {
-  for (int i = 0; i < ctx->num_rpcs; i++) {
-    homa_reset_rpc(&ctx->rpcs[i]);
-    homa_send_rpc(&ctx->rpcs[i]);
+// Drain pending ring until rate budget is exhausted or queue empty.
+// Returns wait time in seconds for the next token (0 if drained empty).
+static double homa_drain_pending(struct thread_args *targs) {
+  while (targs->pending_count > 0) {
+    struct homa_rpc *rpc = targs->pending_ring[targs->pending_head];
+    double wait = rate_limit_try_send(&targs->rate_limit, rpc->hdr.reqlen);
+    if (wait != 0.0)
+      return wait;       // head not advanced; epoll_wait timer will retry
+    homa_actual_send(rpc);
+    targs->pending_head = (targs->pending_head + 1) % targs->pending_cap;
+    targs->pending_count--;
   }
+  return 0.0;
 }
 
 static void homa_init_sock(struct homa_sock *ctx, struct homa_rpc *rpcs,
@@ -715,20 +758,21 @@ static void homa_init_rpc(struct homa_rpc *rpc, struct homa_sock *ctx,
   rpc->recv_msghdr.msg_control = &rpc->recv_control;
 }
 
-static void homa_recvdone_rpc(struct homa_rpc *rpc, int reqlen,
-                              struct histogram *rtt_hist) {
+static void homa_recvdone_rpc(struct thread_args *targs, struct homa_rpc *rpc,
+                              int reqlen) {
   struct iovec vecs[HOMA_MAX_BPAGES];
   int vecs_len = homa_recv_build_iov(vecs, rpc->sock->recv_buf_region, reqlen,
                                      rpc->recv_control.num_bpages,
                                      rpc->recv_control.bpage_offsets);
 
-  add_rtt(rtt_hist, rpc->send_time, rpc->recv_time, rpc->hdr.reqlen,
+  add_rtt(&targs->rtt_hist, rpc->send_time, rpc->recv_time, rpc->hdr.reqlen,
           rpc->hdr.resplen);
   log_debug("client recv (reslen %d, rpcid %llu)\n", reqlen,
             (unsigned long long)rpc->recv_control.id);
   hexdump_iov("homa client recv buf", vecs, vecs_len);
   homa_reset_rpc(rpc);
-  homa_send_rpc(rpc);
+  homa_setup_rpc_header(rpc);  // pin reqlen at enqueue time
+  homa_pending_enqueue(targs, rpc);
 }
 
 static void *thread_homa(void *args) {
@@ -774,22 +818,52 @@ static void *thread_homa(void *args) {
     add_epoll_event(epoll_fd, socks[i].sockfd, EPOLLIN, &socks[i]);
   }
 
+  // Allocate per-thread pending ring (cap = total RPCs across this thread's
+  // sockets). Owner is the thread; freed at threadloop_end.
+  targs->pending_cap = targs->num_rpcs;
+  targs->pending_head = 0;
+  targs->pending_tail = 0;
+  targs->pending_count = 0;
+  targs->pending_ring = calloc(targs->pending_cap, sizeof(void *));
+  if (!targs->pending_ring) {
+    log_fatal("pending ring calloc failed");
+    exit(EXIT_FAILURE);
+  }
+
   clock_gettime(CLOCK_MONOTONIC_RAW, &targs->bench_start);
 
-  for (int i = 0; i < num_sockets_cur_thread; i++)
-    homa_send_all_rpcs(&socks[i]);
+  // Initial burst: enqueue every RPC, then drain (rate-limit gated).
+  for (int i = 0; i < num_sockets_cur_thread; i++) {
+    for (int j = 0; j < socks[i].num_rpcs; j++) {
+      homa_reset_rpc(&socks[i].rpcs[j]);
+      homa_setup_rpc_header(&socks[i].rpcs[j]);
+      homa_pending_enqueue(targs, &socks[i].rpcs[j]);
+    }
+  }
+  double next_wait_s = homa_drain_pending(targs);
 
   while (!sigint_received) {
+    int timeout_ms;
+    if (next_wait_s > 0.0) {
+      timeout_ms = (int)(next_wait_s * 1000.0 + 0.999);  // ceil
+      if (timeout_ms < 1) timeout_ms = 1;
+    } else if (targs->pending_count > 0) {
+      timeout_ms = 0;          // pending but no rate constraint -> immediate
+    } else {
+      timeout_ms = -1;         // nothing pending; block on reply
+    }
+
     int event_count = epoll_wait(epoll_fd, events,
-                                 num_sockets_cur_thread + 1, epoll_wait_timeout);
+                                 num_sockets_cur_thread + 1, timeout_ms);
 
     log_trace("epoll_wait returned %d errno %d", event_count, errno);
     if (event_count == -1) {
-      if (errno == EAGAIN) continue;
+      if (errno == EAGAIN) { next_wait_s = homa_drain_pending(targs); continue; }
       if (errno == EINTR) goto threadloop_end;
       log_fatal("epoll_wait (error %s)", strerror(errno));
       exit(EXIT_FAILURE);
     }
+    // STEP 1: drain ALL ready replies first (timestamp recv_time tight)
     for (int i = 0; i < event_count; i++) {
       struct homa_sock *sock = events[i].data.ptr;
       struct homa_rpc *dummy = &sock->rpc_dummy_recv;
@@ -820,18 +894,23 @@ static void *thread_homa(void *args) {
           if (dummy->recv_control.id == sock->rpcs[j].send_control.id) {
             sock->rpcs[j].recv_time = dummy->recv_time;
             sock->rpcs[j].recv_control = dummy->recv_control;
-            homa_recvdone_rpc(&sock->rpcs[j], ret, &targs->rtt_hist);
+            homa_recvdone_rpc(targs, &sock->rpcs[j], ret);
             num_rpcs_handled++;
             break;
           }
         }
       }
     }
+    // STEP 2: try to send anything pending; record next-token wait for the
+    // next epoll_wait timeout.
+    next_wait_s = homa_drain_pending(targs);
   }
 
 threadloop_end:
   clock_gettime(CLOCK_MONOTONIC_RAW, &targs->bench_end);
   close(epoll_fd);
+  free(targs->pending_ring);
+  targs->pending_ring = NULL;
   for (int i = 0; i < num_sockets_cur_thread; i++) {
     for (int j = 0; j < socks[i].num_rpcs; j++)
       free(rpcs[i][j].send_vec.iov_base);

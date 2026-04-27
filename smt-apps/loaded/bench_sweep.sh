@@ -12,15 +12,38 @@ TRIALS=${3:-3}
 
 mkdir -p "$(dirname "$CSV")"
 
-IFNAME=ens1f1np1
-N1_IP=192.168.12.1      # server on n08 (primary)
-N1_IP_ALT=192.168.13.1  # server on n08 (secondary, smt multi-home)
-N2_IP=192.168.12.2      # client on n09 (primary)
-N2_IP_ALT=192.168.13.2  # client on n09 (secondary)
+# Per-side IFNAME (the test fabric's 100G NIC may have different udev names
+# on each node). Falls back to IFNAME if SRV_/CLI_ unset.
+# Ntuple action numbers (RX queue) for SMT/Homa primary/secondary IP — pick
+# queues whose IRQs land on cores OUTSIDE the taskset range (allnuma maps
+# queue N -> core N within NUMA node).
 
+# --- profile: n08/n09 (Silver 4314 x2) ---
+IFNAME=ens1f1np1
+SRV_HOST=n08
+CLI_HOST=n09
+N1_IP=192.168.12.1
+N1_IP_ALT=192.168.13.1
+N2_IP=192.168.12.2
+N2_IP_ALT=192.168.13.2
 CLIENT_THREADS=12
 SERVER_THREADS=12
-SERVER_PORTS_HOMA="2000-2011"   # 12 ports, one per server thread
+TASKSET_CORES=4-15
+NTUPLE_PRI=0
+NTUPLE_SEC=2
+
+# --- profile: n15/n16 (Gold 5418N, 24 cores online, NUMA0=0-23) ---
+# IFNAME=ens2f0np0
+# SRV_HOST=n15; CLI_HOST=n16
+# CLIENT_THREADS=13; SERVER_THREADS=13; TASKSET_CORES=6-18
+# NTUPLE_PRI=4; NTUPLE_SEC=19
+
+# --- profile: n17 server / n15 client (asymm hardware, asymm NIC names) ---
+# SRV_HOST=n17; CLI_HOST=n15
+# SRV_IFNAME=enp225s0f0np0; CLI_IFNAME=ens2f0np0
+# CLIENT_THREADS=10; SERVER_THREADS=10; TASKSET_CORES=4-13
+# NTUPLE_PRI=0; NTUPLE_SEC=2
+SERVER_PORTS_HOMA="2000-$((2000 + SERVER_THREADS - 1))"   # one per server thread
 SERVER_PORTS_TCP="2000"
 
 SIZES=(${SIZES:-64 1024 8192})
@@ -39,11 +62,11 @@ is_multihome() {
 config_hosts() {
   local mode=$1 cfg=${CONFIG_MODE[$mode]}
   if is_multihome "$mode"; then
-    ssh n08 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N1_IP/24 -b $N1_IP_ALT/24 -m $cfg" >&2
-    ssh n09 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N2_IP/24 -b $N2_IP_ALT/24 -m $cfg" >&2
+    ssh "$SRV_HOST" "NTUPLE_PRI=$NTUPLE_PRI NTUPLE_SEC=$NTUPLE_SEC $REPO/smt-apps/util/config_loaded -i ${SRV_IFNAME:-$IFNAME} -a $N1_IP/24 -b $N1_IP_ALT/24 -m $cfg" >&2
+    ssh "$CLI_HOST" "NTUPLE_PRI=$NTUPLE_PRI NTUPLE_SEC=$NTUPLE_SEC $REPO/smt-apps/util/config_loaded -i ${CLI_IFNAME:-$IFNAME} -a $N2_IP/24 -b $N2_IP_ALT/24 -m $cfg" >&2
   else
-    ssh n08 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N1_IP/24 -m $cfg" >&2
-    ssh n09 "$REPO/smt-apps/util/config_loaded -i $IFNAME -a $N2_IP/24 -m $cfg" >&2
+    ssh "$SRV_HOST" "$REPO/smt-apps/util/config_loaded -i ${SRV_IFNAME:-$IFNAME} -a $N1_IP/24 -m $cfg" >&2
+    ssh "$CLI_HOST" "$REPO/smt-apps/util/config_loaded -i ${CLI_IFNAME:-$IFNAME} -a $N2_IP/24 -m $cfg" >&2
   fi
 }
 
@@ -57,14 +80,27 @@ server_cmd() {
     ports=$SERVER_PORTS_TCP
     nmax=$((CLIENT_THREADS * CLIENT_THREADS))
   fi
-  echo "ulimit -n 1048576; HOMA_ECHO_PIN_CORE_DISABLE=1 taskset -c 4-15 \
+  echo "ulimit -n 1048576; HOMA_ECHO_PIN_CORE_DISABLE=1 taskset -c $TASKSET_CORES \
     $REPO/smt-apps/loaded/loaded_server \
     --proto ${PROTO[$mode]} -p $ports -n $nmax -t $SERVER_THREADS -l $size"
 }
 
+# Per-size aggregate Mbps cap (reqlen-based; 0 = no rate limit).
+# Override via RATE_MBPS_OVERRIDE env to force a specific rate (regardless of size).
+client_rate_mbps() {
+  if [[ -n "${RATE_MBPS_OVERRIDE:-}" ]]; then
+    echo "$RATE_MBPS_OVERRIDE"; return
+  fi
+  case "$1" in
+    64)    echo 512  ;;   # ~1000 kops
+    65536) echo 7864 ;;   # ~15 kops (cliff floor 17 kops × 0.85)
+    *)     echo 0    ;;
+  esac
+}
+
 client_cmd() {
   local mode=$1 size=$2 rpcs=$3
-  local ports target_args sockets
+  local ports target_args sockets rate
   if is_multihome "$mode"; then
     ports=$SERVER_PORTS_HOMA
     target_args="-a $N1_IP -b $N1_IP_ALT"
@@ -74,30 +110,34 @@ client_cmd() {
     target_args="-a $N1_IP"
     sockets=$CLIENT_THREADS
   fi
-  echo "ulimit -n 1048576; HOMA_ECHO_PIN_CORE_DISABLE=1 taskset -c 4-15 \
+  rate=$(client_rate_mbps "$size")
+  echo "ulimit -n 1048576; HOMA_ECHO_PIN_CORE_DISABLE=1 taskset -c $TASKSET_CORES \
     timeout -s SIGINT ${DUR}s $REPO/smt-apps/loaded/loaded_client \
     --proto ${PROTO[$mode]} $target_args -p $ports \
-    -n $rpcs -s $sockets -m 0.0 -t $CLIENT_THREADS -l $size"
+    -n $rpcs -s $sockets -m $rate -t $CLIENT_THREADS -l $size"
 }
 
 kill_server() {
-  ssh n08 "pkill -9 -x loaded_server 2>/dev/null; sleep 0.2; \
+  ssh "$SRV_HOST" "pkill -9 -x loaded_server 2>/dev/null; sleep 0.2; \
     while pgrep -x loaded_server >/dev/null; do sleep 0.1; done; true"
 }
 
 run_one() {
   local mode=$1 size=$2 rpcs=$3 trial=$4
-  echo "=== $mode size=$size rpcs=$rpcs trial=$trial ===" >&2
-  kill_server
-  ssh -f n08 "$(server_cmd "$mode" "$size") >/dev/null 2>&1 </dev/null"
-  sleep 2
-  local out
-  out=$(ssh n09 "$(client_cmd "$mode" "$size" "$rpcs")" 2>&1 || true)
-  kill_server
-  printf '%s\n' "$out" >&2
-
-  local json
-  json=$(sed -n '/--- RESULT ---/,/--- RESULT ---/{/--- RESULT ---/d; p}' <<<"$out" | sed 's/-\?nan/null/g')
+  local max_attempts=${NA_RETRIES:-3} attempt=1 out json
+  while (( attempt <= max_attempts )); do
+    echo "=== $mode size=$size rpcs=$rpcs trial=$trial attempt=$attempt ===" >&2
+    kill_server
+    ssh -f "$SRV_HOST" "$(server_cmd "$mode" "$size") >/dev/null 2>&1 </dev/null"
+    sleep 2
+    out=$(ssh "$CLI_HOST" "$(client_cmd "$mode" "$size" "$rpcs")" 2>&1 || true)
+    kill_server
+    printf '%s\n' "$out" >&2
+    json=$(awk '/--- RESULT ---/{f=!f; next} f' <<<"$out" | sed -E 's/-?nan/null/g')
+    [[ -n "$json" ]] && break
+    echo "=== NA on attempt=$attempt, retrying ===" >&2
+    (( attempt++ ))
+  done
   if [[ -z "$json" ]]; then
     echo "$mode,$size,$rpcs,$trial,NA,NA,NA,NA,NA,NA,NA,NA" >> "$CSV"
     return
