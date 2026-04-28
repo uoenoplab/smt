@@ -33,7 +33,7 @@ int smt_setsockopt(struct sock *sk, int level, int optname,
 				return rc;
 			}
 		}
-		rc = smt_ctx_select(hsk, optval, optlen,
+		rc = smt_ctx_setup(hsk, optval, optlen,
 						  optname == TLS_TX);
 		homa_sock_unlock(hsk);
 		break;
@@ -63,10 +63,14 @@ void smt_sock_destroy(struct homa_sock *hsk)
 		if (hlist_empty(&SMT_SOCK(hsk)->ctx_buckets[i]))
 			continue;
 		hlist_for_each_entry(ctx, &SMT_SOCK(hsk)->ctx_buckets[i], hlist) {
-#ifndef CONFIG_SMT_NOCRYPTO
-			smt_sw_release_resources(ctx, 1);
-			smt_sw_release_resources(ctx, 0);
+#ifdef CONFIG_SMT_HW
+			if (ctx->tx_conf == SMT_HW)
+				smt_device_release_resources_tx(ctx);
 #endif
+			if (ctx->tx_conf == SMT_SW)
+				smt_sw_release_resources(ctx, 1);
+			if (ctx->rx_conf == SMT_SW)
+				smt_sw_release_resources(ctx, 0);
 			smt_ctx_destory(ctx);
 		}
 	}
@@ -81,11 +85,39 @@ int smt_load(struct homa *homa)
 	pr_notice("SMT compiled without actual encrypt/decrypt, only for test\n");
 #endif
 
+#ifdef CONFIG_SMT_HW
+	homa->smt_hardware_state_threshold = 1;
+	strscpy(homa->smt_hardware_interface, "ens1f1np1",
+		sizeof(homa->smt_hardware_interface));
+#endif /* CONFIG_SMT_HW */
+
 	smt_ctx_kmem = kmem_cache_create("homa_smt_ctx",
 			sizeof(struct smt_context), 0, SLAB_HWCACHE_ALIGN,
 			NULL);
 	if (!smt_ctx_kmem)
 		return -ENOMEM;
+	return 0;
+}
+
+int smt_encrypt(struct homa_rpc *rpc, struct sk_buff *skb, u8 *smt_h,
+		int smt_h_offset, int payload_len)
+{
+	struct smt_context *ctx = SMT_RPC(rpc)->ctx;
+
+#ifdef CONFIG_SMT_HW
+	if (ctx->tx_conf == SMT_HW) {
+		int err;
+
+		if (rpc->msgout.num_skbs == 0) {
+			err = smt_device_set_crypto_tx(rpc);
+			if (err)
+				return err;
+		}
+		return smt_device_encrypt(rpc, smt_h, NULL, skb);
+	}
+#endif
+	if (ctx->tx_conf == SMT_SW)
+		return smt_sw_encrypt(rpc, skb, smt_h_offset, payload_len);
 	return 0;
 }
 
@@ -107,12 +139,18 @@ int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
 
 void smt_rpc_release(struct homa_rpc *rpc)
 {
-#ifndef CONFIG_SMT_NOCRYPTO
-	if (rpc->smt.ctx) {
-		smt_sw_release_rpc(rpc, 1);
-		smt_sw_release_rpc(rpc, 0);
-	}
+	if (!rpc->smt.ctx)
+		return;
+
+#ifdef CONFIG_SMT_HW
+	if (rpc->smt.ctx->tx_conf == SMT_HW)
+		smt_device_release_rpc_tx(rpc);
 #endif
+	if (rpc->smt.ctx->tx_conf == SMT_SW)
+		smt_sw_release_rpc(rpc, 1);
+	if (rpc->smt.ctx->rx_conf == SMT_SW)
+		smt_sw_release_rpc(rpc, 0);
+
 	rpc->smt.ctx = NULL;
 }
 

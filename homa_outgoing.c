@@ -151,29 +151,61 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	struct sk_buff *skb;
 	int err, gso_size;
 	u64 segs;
-	int smt_length = pad_info.hdr_len + pad_info.trl_len + length;
 	bool trailer_only = false;
-
+#ifdef CONFIG_SMT
+#define MAX_SMT_PADDING 32
+	int smt_length = pad_info.hdr_len + pad_info.trl_len + length;
 	u8 *smt_h = NULL;
-
-	segs = smt_length + max_seg_data - 1;
-	do_div(segs, max_seg_data);
-	/* Trailer-only: the last segment's wire bytes are entirely TLS tag
-	 * (no plaintext and no interleaved seg_hdr). This happens when
-	 * smt_length aligns such that the last seg holds <= trl_len bytes.
+	u8 smt_zero[MAX_SMT_PADDING] = {0};
+	bool smt_inline = false;
+	/* HW-offload skb layout (smt_h in linear) is chosen at runtime per RPC
+	 * based on ctx->tx_conf. SW fallback (ctx->tx_conf == SMT_SW even when
+	 * built with CONFIG_SMT_HW) uses the SW frag layout that
+	 * smt_sw_encrypt expects. In non-HW build the layout is always SW so
+	 * the flag is hardcoded false.
 	 */
+#ifdef CONFIG_SMT_HW
+	bool smt_is_hw = is_smt_rpc(rpc) &&
+			 SMT_RPC(rpc)->ctx->tx_conf == SMT_HW;
+#else
+	bool smt_is_hw = false;
+#endif
+	segs = smt_length + max_seg_data - 1;
+#else
+	segs = length + max_seg_data - 1;
+#endif
+	do_div(segs, max_seg_data);
+
+#ifdef CONFIG_SMT
 	if (smt_length + max_seg_data <= pad_info.trl_len + segs * max_seg_data)
 		trailer_only = 1;
-
 	smt_pr_devel("%s: length=%d max_seg_data=%d pad_hdr=%d pad_trl=%d smt_length=%d segs=%lld trailer_only=%d\n", __func__,
 	       length, max_seg_data, pad_info.hdr_len, pad_info.trl_len, smt_length, segs, trailer_only);
+#endif
 
-	/* Initialize the overall skb. */
+	/* Initialize the overall skb. Layouts:
+	 *  - SMT_HW: linear = data_hdr_minus_seg + smt_h (NIC TLS engine reads
+	 *    TLS rec hdr from linear at skb_tcp_all_headers offset).
+	 *  - SMT (SW): linear = data_hdr_minus_seg; smt_h + first seg_hdr +
+	 *    payload + trailer all in frags[0] (single-page sg for AEAD).
+	 *  - default: data_hdr in linear; payload in frags.
+	 */
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc)) {
+		size_t linear = sizeof(struct homa_data_hdr) -
+				sizeof(struct homa_seg_hdr);
+
+		if (smt_is_hw)
+			linear += pad_info.hdr_len;
+		skb = homa_skb_alloc_tx(linear);
+	}
+	else
+#endif
 #ifndef __STRIP__ /* See strip.py */
-	skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) + pad_info.hdr_len);
+		skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr));
 #else /* See strip.py */
-	skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) + length +
-			      (segs - 1) * sizeof(struct homa_seg_hdr));
+		skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) + length +
+					(segs - 1) * sizeof(struct homa_seg_hdr));
 #endif /* See strip.py */
 	if (!skb) {
 		hsk->error_msg = "couldn't allocate sk_buff for outgoing message";
@@ -190,6 +222,11 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	h->common.sequence = htonl(offset);
 	h->common.type = DATA;
 	homa_set_doff(skb, sizeof(struct homa_data_hdr));
+#ifdef CONFIG_SMT
+	if (smt_is_hw)
+		homa_set_doff(skb, sizeof(struct homa_data_hdr) -
+				sizeof(struct homa_seg_hdr));
+#endif /* CONFIG_SMT */
 	h->common.checksum = 0;
 	h->common.sender_id = cpu_to_be64(rpc->id);
 	h->message_length = htonl(rpc->msgout.length);
@@ -210,9 +247,76 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	}
 #endif
 
-	if (pad_info.hdr_len > 0)
-		smt_h = skb_put(skb, pad_info.hdr_len);
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc)) {
+		if (smt_is_hw) {
+			/* HW: smt_h placeholder in linear (NIC TLS
+			 * engine reads TLS rec hdr at
+			 * skb_tcp_all_headers offset).
+			 */
+			smt_h = skb_put(skb, pad_info.hdr_len);
+			memset(smt_h, 0, pad_info.hdr_len);
+		}
 
+		if (segs == 1) {
+			/* segs==1 contig frag.
+			 * HW: seg_hdr + payload + trailer.
+			 * SW: smt_h + seg_hdr + payload + trailer.
+			 */
+			int total = sizeof(struct homa_seg_hdr) +
+				    length + pad_info.trl_len;
+			u8 *frag_base;
+
+			if (!smt_is_hw)
+				total += pad_info.hdr_len;
+			if (total > HOMA_SKB_PAGE_SIZE ||
+			    skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS) {
+				err = -ENOMEM;
+				goto error;
+			}
+			frag_base = homa_skb_extend_frags(rpc->hsk->homa,
+							  skb, &total,
+							  true);
+			if (!frag_base) {
+				err = -ENOMEM;
+				goto error;
+			}
+			if (smt_is_hw) {
+				h_s = (struct homa_seg_hdr *)frag_base;
+			} else {
+				smt_h = frag_base;
+				memset(smt_h, 0, pad_info.hdr_len);
+				h_s = (struct homa_seg_hdr *)
+					(frag_base + pad_info.hdr_len);
+			}
+			memset(h_s, 0, sizeof(*h_s));
+			smt_inline = true;
+		} else {
+			/* segs>1.
+			 * HW: seg_hdr_0 in frag; rest interleaved.
+			 * SW: smt_h + seg_hdr_0 in frag; rest interleaved.
+			 */
+			int first = sizeof(struct homa_seg_hdr);
+
+			if (!smt_is_hw)
+				first += pad_info.hdr_len;
+			err = homa_skb_append_to_frag(rpc->hsk->homa,
+						      skb, smt_zero,
+						      first);
+			if (err)
+				goto error;
+			if (smt_is_hw) {
+				h_s = (struct homa_seg_hdr *)
+					skb_frag_address(&skb_shinfo(skb)->frags[0]);
+			} else {
+				smt_h = (u8 *)skb_frag_address(
+						&skb_shinfo(skb)->frags[0]);
+				h_s = (struct homa_seg_hdr *)
+					(smt_h + pad_info.hdr_len);
+			}
+		}
+	} else
+#endif
 	h_s = (struct homa_seg_hdr *)skb_put(skb, sizeof(struct homa_seg_hdr));
 #ifndef __STRIP__ /* See strip.py */
 	h_s->offset = htonl(-1);
@@ -222,20 +326,27 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 
 	homa_info = homa_get_skb_info(skb);
 	homa_info->next_skb = NULL;
+#ifdef CONFIG_SMT_HW
+	homa_info->smt_state_set = false;
+#endif
 	homa_info->wire_bytes = length + segs * (sizeof(struct homa_data_hdr)
-			+ hsk->ip_header_length + HOMA_ETH_OVERHEAD)
-			+ pad_info.hdr_len + pad_info.trl_len
+			+ hsk->ip_header_length + HOMA_ETH_OVERHEAD);
+#ifdef CONFIG_SMT
+	homa_info->wire_bytes += pad_info.hdr_len + pad_info.trl_len
 			- trailer_only * sizeof(struct homa_seg_hdr);
+#endif
 	homa_info->data_bytes = length;
 	homa_info->seg_length = max_seg_data;
 	homa_info->offset = offset;
 	homa_info->rpc = rpc;
 	homa_info->dont_defer = false;
 
+#ifdef CONFIG_SMT
 	smt_pr_devel("%s: wire_bytes=%d data_bytes=%d seg_length=%d offset=%d\n", __func__,
 	       homa_info->wire_bytes, homa_info->data_bytes, homa_info->seg_length, homa_info->offset);
 	smt_pr_devel("%s: segs=%lld homa_data_hdr=%zu ip_hdr=%d eth_overhead=%d\n", __func__,
 	       segs, sizeof(struct homa_data_hdr), hsk->ip_header_length, HOMA_ETH_OVERHEAD);
+#endif
 
 #ifndef __STRIP__ /* See strip.py */
 	if (segs > 1 && !homa_sock_hijacked(hsk)) {
@@ -248,9 +359,21 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 		h_s->offset = htonl(offset);
 #endif /* See strip.py */
 		gso_size = max_seg_data + sizeof(struct homa_seg_hdr);
-		err = homa_fill_data_interleaved(rpc, skb, iter, pad_info);
+		err = homa_fill_data_interleaved(rpc, skb, iter,
+							 pad_info);
 	} else {
 		gso_size = max_seg_data;
+#ifdef CONFIG_SMT
+		if (smt_inline) {
+			void *dst = (u8 *)h_s + sizeof(struct homa_seg_hdr);
+
+			if (copy_from_iter(dst, length, iter) != length)
+				err = -EFAULT;
+			else
+				err = 0;
+		}
+		else
+#endif
 		err = homa_skb_append_from_iter(hsk->homa, skb, iter, length);
 	}
 	if (err) {
@@ -270,72 +393,74 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 		    (hsk->inet.sk.sk_family == AF_INET6) ? SKB_GSO_TCPV6 :
 		    SKB_GSO_TCPV4;
 
+#ifdef CONFIG_SMT
 		smt_pr_devel("%s: segs=%lld gso_size=%d gso_type=0x%x\n", __func__,
 		       segs, gso_size, skb_shinfo(skb)->gso_type);
+#endif
 	}
 
 #ifdef CONFIG_SMT
-#define MAX_SMT_TRAILER 32
-	if (is_smt_rpc(rpc)) {
-		u8 smt_t_zero[MAX_SMT_TRAILER] = {0};
+	if (!is_smt_rpc(rpc))
+		goto out;
 
-		/* Reserve the auth-tag region at the tail of the frag chain;
-		 * it will either be left as 0x00/0xFF placeholder (nocrypto)
-		 * or overwritten in place by smt_sw_encrypt below.
-		 */
+
 #ifdef CONFIG_SMT_NOCRYPTO
-		for (int i = 0; i < pad_info.trl_len; i++)
-			smt_t_zero[i] = 0xFF;
+	for (int i = 0; i < pad_info.trl_len; i++)
+		smt_zero[i] = 0xFF;
 #endif
-		err = homa_skb_append_to_frag(rpc->hsk->homa, skb, smt_t_zero,
+
+	if (smt_inline) {
+		/* trailer region was zero'd by the initial memset of the
+		 * reserved frag; for NOCRYPTO, overwrite with the 0xFF pattern.
+		 */
+#ifdef CONFIG_SMT_NOCRYPTO
+		memset((u8 *)h_s + sizeof(struct homa_seg_hdr) + length,
+		       0xFF, pad_info.trl_len);
+#endif
+		err = 0;
+	} else {
+		err = homa_skb_append_to_frag(rpc->hsk->homa, skb, smt_zero,
 					      pad_info.trl_len);
-		if (err)
-			goto error;
+	}
+	if (err)
+		goto error;
 
 #ifdef CONFIG_SMT_NOCRYPTO
-		/* Test-only placeholder header: plaintext TLS record header
-		 * + 0xFF filler. No real encryption is performed.
-		 */
-		smt_h[0] = 0x17;
-		smt_h[1] = 0x03;
-		smt_h[2] = 0x03;
-		{
-			int smt_h_l = length + pad_info.hdr_len - 5 +
-				      pad_info.trl_len +
-				      segs * sizeof(struct homa_seg_hdr) -
-				      trailer_only *
-					      sizeof(struct homa_seg_hdr);
-			smt_h[3] = smt_h_l >> 8;
-			smt_h[4] = smt_h_l & 0xff;
-		}
-		for (int i = 5; i < pad_info.hdr_len; i++)
-			smt_h[i] = 0xFF;
-#else
-		{
-			int payload_len = length +
-				(int)((segs - trailer_only) *
-				      sizeof(struct homa_seg_hdr));
-
-			err = smt_sw_encrypt(rpc, skb,
-					     (int)(sizeof(struct homa_data_hdr) -
-						   sizeof(struct homa_seg_hdr)),
-					     payload_len);
-			if (err) {
-				smt_pr_err("%s: smt_sw_encrypt failed %d\n",
-					   __func__, err);
-				goto error;
-			}
-		}
-#endif /* CONFIG_SMT_NOCRYPTO */
+	smt_h[0] = 0x17;
+	smt_h[1] = 0x03;
+	smt_h[2] = 0x03;
+	{
+		int smt_h_l = length + pad_info.hdr_len - 5 +
+				pad_info.trl_len +
+				segs * sizeof(struct homa_seg_hdr) -
+				trailer_only *
+				sizeof(struct homa_seg_hdr);
+		smt_h[3] = smt_h_l >> 8;
+		smt_h[4] = smt_h_l & 0xff;
 	}
-#endif /* CONFIG_SMT */
+	for (int i = 5; i < pad_info.hdr_len; i++)
+		smt_h[i] = 0xFF;
+	goto out;
+#endif
 
+	int payload_len = length + (int)((segs - trailer_only) *
+			sizeof(struct homa_seg_hdr));
+
+	err = smt_encrypt(rpc, skb, smt_h, payload_len);
+	if (err) {
+		smt_pr_err("%s: smt_encrypt failed %d\n",
+				__func__, err);
+		goto error;
+	}
+
+out:
 	smt_pr_devel("%s: len=%d data_len=%d truesize=%d headroom=%d tailroom=%d\n", __func__,
 	       skb->len, skb->data_len, skb->truesize,
 	       skb_headroom(skb), skb_tailroom(skb));
 	smt_pr_devel("%s: nr_frags=%d\n", __func__,
 	       skb_shinfo(skb)->nr_frags);
 
+#endif /* CONFIG_SMT */
 	return skb;
 
 error:
@@ -385,7 +510,6 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 	int err;
 
 #ifdef CONFIG_SMT
-	// SMT TODO: check rpc and if it is a SMT rpc, set padding info
 	if (is_smt_rpc(rpc)) {
 		smt_pr_devel("homa_message_out_fill: SMT rpc %lld detected\n",
 			     rpc->id);
@@ -492,12 +616,27 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 		smt_pr_devel("%s:  max_gso_data=%d pad_hdr=%d pad_trl=%d skb_msg_data_bytes=%d offset=%d bytes_left=%d\n", __func__,
 		       max_gso_data, pad_info.hdr_len, pad_info.trl_len, skb_msg_data_bytes, offset, bytes_left);
 #ifndef __STRIP__ /* See strip.py */
-		if (offset < rpc->msgout.unscheduled &&
-		    (offset + skb_msg_data_bytes) > rpc->msgout.unscheduled) {
-			/* Insert a packet boundary at the unscheduled limit,
-			 * so we don't transmit extra data.
-			 */
-			skb_msg_data_bytes = rpc->msgout.unscheduled - offset;
+		/* Skip the unscheduled-boundary truncation only for SMT-HW
+		 * RPCs: NIC TLS-GSO needs uniform TLS records, an odd-sized
+		 * record at the unsched/sched boundary would break the
+		 * receiver's record framing. homa_xmit_data still enforces
+		 * the grant limit via next_xmit_offset >= granted. Plain
+		 * Homa and SMT-SW RPCs keep the original truncation.
+		 */
+#ifdef CONFIG_SMT_HW
+		bool rpc_is_hw = is_smt_rpc(rpc) &&
+				 SMT_RPC(rpc)->ctx->tx_conf == SMT_HW;
+#else
+		bool rpc_is_hw = false;
+#endif
+		if (!rpc_is_hw) {
+			if (offset < rpc->msgout.unscheduled &&
+			    (offset + skb_msg_data_bytes) > rpc->msgout.unscheduled) {
+				/* Insert a packet boundary at the unscheduled
+				 * limit, so we don't transmit extra data.
+				 */
+				skb_msg_data_bytes = rpc->msgout.unscheduled - offset;
+			}
 		}
 #endif /* See strip.py */
 		if (skb_msg_data_bytes > bytes_left)
@@ -777,6 +916,11 @@ void homa_xmit_data(struct homa_rpc *rpc)
 #endif /* See strip.py */
 
 		homa_rpc_unlock(rpc);
+		/* Re-stamp the cb carrier: this skb may have sat on the
+		 * throttle queue and reached the IP stack from a Grant-driven
+		 * softirq, where cb was clobbered after encrypt.
+		 */
+		smt_hw_attach_skb(rpc, skb);
 		skb_get(skb);
 #ifndef __STRIP__ /* See strip.py */
 		__homa_xmit_data(skb, rpc, priority);
@@ -791,6 +935,17 @@ void homa_xmit_data(struct homa_rpc *rpc)
 #endif /* See strip.py */
 		homa_rpc_lock(rpc);
 	}
+#ifdef CONFIG_SMT_HW
+	/* Directive 2: once all data has been handed to the IP stack, the
+	 * HW TIS slot can return to its per-CPU pool. Outstanding skbs hold
+	 * an inflight refcount so the actual return waits for completion.
+	 * Only RPCs that actually used HW offload have a TIS to release.
+	 */
+	if (is_smt_rpc(rpc) &&
+	    SMT_RPC(rpc)->ctx->tx_conf == SMT_HW &&
+	    rpc->msgout.next_xmit_offset >= rpc->msgout.length)
+		smt_device_release_tis(rpc);
+#endif
 }
 
 #ifndef __STRIP__ /* See strip.py */

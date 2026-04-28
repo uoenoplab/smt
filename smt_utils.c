@@ -77,7 +77,7 @@ static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 		return NULL;
 	reuse_ctx = SMT_SOCK(hsk)->reuse_ctx;
 
-	ctx = kmem_cache_alloc(smt_ctx_kmem, GFP_ATOMIC);
+	ctx = kmem_cache_zalloc(smt_ctx_kmem, GFP_ATOMIC);
 	smt_pr_devel("%s ctx %px\n", __func__, ctx);
 	if (!ctx) {
 		smt_pr_err("%s smt_ctx_kmem alloc failed\n", __FUNCTION__);
@@ -90,6 +90,45 @@ static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 	ctx->peer_port = peer_port;
 	ctx->aes_gcm_128_send = reuse_ctx->aes_gcm_128_send;
 	ctx->aes_gcm_128_recv = reuse_ctx->aes_gcm_128_recv;
+
+	/* Eagerly alloc per-ctx offload state under the sock lock; lazy alloc
+	 * in smt_sw_borrow_crypto would race across bucket-locked TX paths
+	 * sharing this ctx.
+	 */
+#ifdef CONFIG_SMT_HW
+	if (ctx->tx_conf == SMT_HW) {
+		int rc = smt_hw_set_offload_tx(hsk, ctx);
+
+		if (rc) {
+			smt_pr_err("%s: HW offload alloc failed, rc=%d\n",
+				   __func__, rc);
+			kmem_cache_free(smt_ctx_kmem, ctx);
+			return ERR_PTR(rc);
+		}
+	}
+#endif /* CONFIG_SMT_HW */
+	if (ctx->tx_conf == SMT_SW) {
+		int rc = smt_sw_set_offload(ctx, 1);
+
+		if (rc) {
+			kmem_cache_free(smt_ctx_kmem, ctx);
+			return ERR_PTR(rc);
+		}
+	}
+	if (ctx->rx_conf == SMT_SW) {
+		int rc = smt_sw_set_offload(ctx, 0);
+
+		if (rc) {
+#ifdef CONFIG_SMT_HW
+			if (ctx->tx_conf == SMT_HW)
+				smt_device_release_resources_tx(ctx);
+#endif
+			if (ctx->tx_conf == SMT_SW)
+				smt_sw_release_resources(ctx, 1);
+			kmem_cache_free(smt_ctx_kmem, ctx);
+			return ERR_PTR(rc);
+		}
+	}
 
 	hlist_add_head(&ctx->hlist, bucket);
 
@@ -138,9 +177,8 @@ static int smt_ctx_init(struct homa_sock *hsk,
 		goto out;
 	}
 
-	smt_pr_info("smt_setsockopt_conf invoked on Homa socket:"
-			 "crypto_info_optval %px, ctx %px\n",
-			 crypto_info_optval, ctx);
+	smt_pr_info("%s invoked on Homa socket: crypto_info_optval %px, ctx %px\n",
+		    __func__, crypto_info_optval, ctx);
 
 	crypto_info = tx ? &(ctx->aes_gcm_128_send) :
 			   &(ctx->aes_gcm_128_recv);
@@ -182,22 +220,60 @@ static int smt_ctx_init(struct homa_sock *hsk,
 	smt_pr_devel("%s alt_crypto_info->info.cipher_type %hu \n",
 			 __func__, alt_crypto_info->info.cipher_type);
 
-	smt_hexdump("smt_setsockopt_conf crypto_info->salt ", crypto_info->salt,
+	smt_hexdump("smt_ctx_init crypto_info->salt ", crypto_info->salt,
 		    sizeof(crypto_info->salt));
-	smt_hexdump("smt_setsockopt_conf crypto_info->iv ", crypto_info->iv,
+	smt_hexdump("smt_ctx_init crypto_info->iv ", crypto_info->iv,
 		    sizeof(crypto_info->iv));
-	smt_hexdump("smt_setsockopt_conf crypto_info->key ", crypto_info->key,
+	smt_hexdump("smt_ctx_init crypto_info->key ", crypto_info->key,
 		    sizeof(crypto_info->key));
-	smt_hexdump("smt_setsockopt_conf crypto_info->rec_seq ",
+	smt_hexdump("smt_ctx_init crypto_info->rec_seq ",
 		    crypto_info->rec_seq, sizeof(crypto_info->rec_seq));
 	smt_pr_info("%s ctx->addr %X ctx->port %d\n", __func__,
 		ntohl(ctx->peer_addr), (int) ntohs(ctx->peer_port));
+
+#ifdef CONFIG_SMT_NOCRYPTO
+	goto out;
+#endif
+
+	if (tx && !ctx->offload_tx) {
+		/* Pick TX path. Default to HW when built with CONFIG_SMT_HW;
+		 * silently fall back to SW when HW offload setup fails (NIC
+		 * missing tls-hw-tx-offload, mlx5_core not patched, etc.).
+		 * homa_tx_data_pkt_alloc keys its skb layout off ctx->tx_conf
+		 * at runtime, so once we settle it here the rest of the TX
+		 * path follows the matching frag/linear arrangement.
+		 */
+#ifdef CONFIG_SMT_HW
+		ctx->tx_conf = SMT_HW;
+		rc = smt_hw_set_offload_tx(hsk, ctx);
+		if (rc) {
+			smt_pr_devel("%s: HW TX offload unavailable (rc=%d), falling back to SW\n",
+				     __func__, rc);
+			ctx->tx_conf = SMT_SW;
+		}
+#else
+		ctx->tx_conf = SMT_SW;
+#endif
+		if (ctx->tx_conf == SMT_SW) {
+			rc = smt_sw_set_offload(ctx, tx);
+			if (rc)
+				goto out;
+		}
+	}
+
+	if (!tx && !ctx->offload_rx) {
+		/* No RX HW TLS offload anywhere in the stack; always SW. */
+		ctx->rx_conf = SMT_SW;
+		rc = smt_sw_set_offload(ctx, tx);
+		if (rc)
+			goto out;
+	}
 
 out:
 	return rc;
 }
 
-int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
+int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 			      unsigned int optlen, int tx)
 {
 	int rc = 0;
@@ -226,7 +302,7 @@ int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 		goto out;
 	}
 
-	smt_hexdump("smt_ctx_select received smt_info",
+	smt_hexdump("smt_ctx_setup received smt_info",
 		    (unsigned char *)&crypto_info_optval, optlen);
 
 	// smt_pr_devel("%s crypto_info %px", __FUNCTION__, crypto_info_optval);
@@ -295,16 +371,12 @@ int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
 		hlist_add_head(&ctx->hlist, bucket);
 	}
 
-#ifndef CONFIG_SMT_NOCRYPTO
-	if ((tx && !ctx->offload_tx) || (!tx && !ctx->offload_rx)) {
-		rc = smt_sw_set_offload(ctx, tx);
-		if (rc)
-			goto err_crypto_info;
-	}
-#endif
-
 	if ((crypto_info_optval.smt.peer_addr == 0)
 			&& (crypto_info_optval.smt.peer_port == 0)) {
+		if (SMT_SOCK(hsk)->reuse_ctx
+		    && SMT_SOCK(hsk)->reuse_ctx != ctx)
+			smt_pr_err("%s: reuse_ctx changing %px -> %px\n",
+				   __func__, SMT_SOCK(hsk)->reuse_ctx, ctx);
 		SMT_SOCK(hsk)->reuse_ctx = ctx;
 	}
 
@@ -329,28 +401,18 @@ int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 	struct hlist_head* bucket;
 	struct smt_context *ctx;
 	int rc = 0;
-	u64 __t;
 
 	if (!hsk->smt)
 		return 0;
-
-	u64 __t2;
-
-	__t = SMT_TIME_START();
 
 	addr = ipv6_to_ipv4(rpc->peer->addr);
 	port = htons(rpc->dport);
 	bucket = smt_ctx_bucket(hsk, addr, port);
 
-	__t2 = SMT_TIME_START();
 	ctx = smt_ctx_query(hsk, addr, port, bucket);
-	SMT_TIME_END(smt_ctx_query, __t2);
 
-	if (ctx == NULL) {
-		__t2 = SMT_TIME_START();
+	if (ctx == NULL)
 		ctx = smt_ctx_clone(rpc->hsk, addr, port, bucket);
-		SMT_TIME_END(smt_ctx_clone, __t2);
-	}
 	if (IS_ERR(ctx)) {
 		rc = PTR_ERR(ctx);
 		goto out;
@@ -359,20 +421,20 @@ int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 	SMT_RPC(rpc)->ctx = ctx;
 	SMT_RPC(rpc)->decrypt_offset = 0;
 
-	__t2 = SMT_TIME_START();
 	rcu_read_lock();
 	SMT_RPC(rpc)->smt_max_pkt_data = smt_peer_mtu(rpc->peer, rpc->hsk)
 		- rpc->hsk->ip_header_length - sizeof(struct homa_data_hdr);
 	rcu_read_unlock();
-	SMT_TIME_END(smt_ctx_dst_mtu, __t2);
 
-#ifndef CONFIG_SMT_NOCRYPTO
-	smt_sw_init_rpc(rpc, 1);
-	smt_sw_init_rpc(rpc, 0);
+#ifdef CONFIG_SMT_HW
+	if (ctx->tx_conf == SMT_HW)
+		smt_hw_init_rpc(rpc);
 #endif
+	if (ctx->tx_conf == SMT_SW)
+		smt_sw_init_rpc(rpc, 1);
+	if (ctx->rx_conf == SMT_SW)
+		smt_sw_init_rpc(rpc, 0);
 
-// TODO: better error handle
 out:
-	SMT_TIME_END(smt_ctx_init, __t);
 	return rc;
 }

@@ -18,6 +18,11 @@ SMT_OBJS := smt_plumbing.o \
 	smt_sw.o \
 	smt_utils.o
 
+# HW offload (mlx5 ktls) is opt-in: pass SMT_CFLAGS=-DCONFIG_SMT_HW.
+ifneq ($(findstring -DCONFIG_SMT_HW,$(SMT_CFLAGS)),)
+SMT_OBJS += smt_device.o
+endif
+
 ifneq ($(__STRIP__),)
 MY_CFLAGS += -D__STRIP__
 else
@@ -66,6 +71,12 @@ info:
 debug:
 	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DCONFIG_SMT_DEBUG -fno-reorder-functions $(SMT_CFLAGS)" modules
 
+hw:
+	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DCONFIG_SMT_HW $(SMT_CFLAGS)" modules
+
+hw-debug:
+	$(MAKE) -j$(THREADS) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DCONFIG_SMT_HW -DCONFIG_SMT_DEBUG -fno-reorder-functions $(SMT_CFLAGS)" modules
+
 install:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) modules_install
 
@@ -111,11 +122,14 @@ $(LINUX_SRC_DIR)/include/uapi/linux/homa.h: homa.h util/strip.py
 
 help:
 	@echo "Homa/SMT Build Targets:"
-	@echo "  make              - Build with default SMT config"
+	@echo "  make              - Build with default SMT config (SW crypto only)"
 	@echo "  make info         - Build with SMT info logging"
 	@echo "  make debug        - Build with SMT debug logging"
+	@echo "  make hw           - Build with HW offload (mlx5 ktls) enabled"
+	@echo "  make hw-debug     - Build with HW offload + debug logging"
 	@echo ""
 	@echo "SMT Config Options (pass via SMT_CFLAGS):"
+	@echo "  CONFIG_SMT_HW             - Enable HW TX offload path (mlx5 ktls); requires patched mlx5_core"
 	@echo "  CONFIG_SMT_NOCRYPTO       - Disable crypto (use 0xFF fillers for testing)"
 	@echo "  CONFIG_HOMA_SMT_PROFILING - Enable SMT profiling/timetrace"
 	@echo "  CONFIG_SMT_HEXDUMP        - Enable hexdump helpers (requires CONFIG_SMT_DEBUG, i.e. make debug)"
@@ -124,6 +138,7 @@ help:
 	@echo "  make SMT_CFLAGS=\"-DCONFIG_SMT_NOCRYPTO\""
 	@echo "  make SMT_CFLAGS=\"-DCONFIG_HOMA_SMT_PROFILING\""
 	@echo "  make debug SMT_CFLAGS=\"-DCONFIG_SMT_HEXDUMP\""
+	@echo "  make hw SMT_CFLAGS=\"-DCONFIG_HOMA_SMT_PROFILING\""
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) clean

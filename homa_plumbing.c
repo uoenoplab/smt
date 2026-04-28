@@ -419,6 +419,24 @@ static struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#ifdef CONFIG_SMT
+#ifdef CONFIG_SMT_HW
+	{
+		.procname	= "smt_hardware_interface",
+		.data		= OFFSET(smt_hardware_interface),
+		.maxlen		= sizeof(homa_data.smt_hardware_interface),
+		.mode		= 0644,
+		.proc_handler	= homa_dostring
+	},
+	{
+		.procname	= "smt_hardware_state_threshold",
+		.data		= OFFSET(smt_hardware_state_threshold),
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= homa_dointvec
+	},
+#endif /* CONFIG_SMT_HW */
+#endif /* CONFIG_SMT */
 };
 #endif /* See strip.py */
 
@@ -1973,6 +1991,22 @@ int homa_dointvec(const struct ctl_table *table, int write,
 		}
 	}
 	return result;
+}
+
+/**
+ * homa_dostring() - Like homa_dointvec(), but for string-valued sysctl entries.
+ * Resolves the OFFSET-encoded data pointer against the net-namespace-specific
+ * struct homa, then defers to proc_dostring().
+ */
+int homa_dostring(const struct ctl_table *table, int write,
+		  void *buffer, size_t *lenp, loff_t *ppos)
+{
+	struct homa *homa = homa_net(current->nsproxy->net_ns)->homa;
+	struct ctl_table table_copy;
+
+	table_copy = *table;
+	table_copy.data = ((char *)homa) + (uintptr_t)table_copy.data;
+	return proc_dostring(&table_copy, write, buffer, lenp, ppos);
 }
 
 /**

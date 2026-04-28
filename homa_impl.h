@@ -512,6 +512,23 @@ struct homa {
 	 */
 	int temp[4];
 #endif /* See strip.py */
+
+#ifdef CONFIG_SMT
+#ifdef CONFIG_SMT_HW
+	/**
+	 * @smt_hardware_interface: netdev name to use for SMT TX HW offload
+	 * (mlx5 ktls). Default ens1f1np1.
+	 */
+	char smt_hardware_interface[32];
+
+	/**
+	 * @smt_hardware_state_threshold: target #RPCs per driver_state before
+	 * allocating another. Reserved for future threshold-based growth; the
+	 * current port uses a single shared driver_state.
+	 */
+	int smt_hardware_state_threshold;
+#endif /* CONFIG_SMT_HW */
+#endif /* CONFIG_SMT */
 };
 
 /**
@@ -767,6 +784,8 @@ void     homa_xmit_unknown(struct sk_buff *skb, struct homa_sock *hsk);
 #ifndef __STRIP__ /* See strip.py */
 void     homa_cutoffs_pkt(struct sk_buff *skb, struct homa_sock *hsk);
 int      homa_dointvec(const struct ctl_table *table, int write,
+		       void *buffer, size_t *lenp, loff_t *ppos);
+int      homa_dostring(const struct ctl_table *table, int write,
 		       void *buffer, size_t *lenp, loff_t *ppos);
 void     homa_incoming_sysctl_changed(struct homa *homa);
 int      homa_ioc_abort(struct socket *sock, unsigned long arg);

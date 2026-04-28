@@ -50,14 +50,50 @@ extern int smt_load(struct homa *homa);
 
 extern int smt_unload(void);
 
+extern int smt_encrypt(struct homa_rpc *rpc, struct sk_buff *skb, u8 *smt_h,
+		       int smt_h_offset, int payload_len);
+
 static inline bool is_smt_rpc(struct homa_rpc *rpc) {
 	return rpc->smt.ctx != NULL;
 }
+
+#ifdef CONFIG_SMT_HW
+/* Re-stamp priv_tx into the tail of skb->cb (and skb->queue_mapping) just
+ * before NIC submission. smt_device_encrypt() does the first stamp, but IP /
+ * qdisc / Grant-softirq layers can clobber cb between encrypt and NIC TX —
+ * the patched mlx5 TX hook reads priv_tx from this cb slot.
+ */
+extern void smt_hw_attach_skb(struct homa_rpc *rpc, struct sk_buff *skb);
+#else
+static inline void smt_hw_attach_skb(struct homa_rpc *rpc, struct sk_buff *skb)
+{
+	(void)rpc;
+	(void)skb;
+}
+#endif
 
 extern int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk,
 					  struct homa_rpc *rpc);
 
 extern void smt_rpc_release(struct homa_rpc *rpc);
+
+/* smt_sw.c */
+
+extern int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs,
+			  int n);
+
+/* smt_incoming.c */
+
+struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,
+				      struct sk_buff *skb);
+
+bool smt_record_complete(struct homa_rpc *rpc, struct sk_buff *skb);
+
+int smt_data_offset(struct sk_buff *skb);
+
+int smt_rpc_alloc_server_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc);
+
+#endif /* _SMT_PLUMBING_H */
 
 /* timing helpers */
 
@@ -108,24 +144,3 @@ static inline u64 smt_rdtsc(void)
 #define SMT_COUNT(metric) do {} while (0)
 
 #endif /* CONFIG_HOMA_SMT_PROFILING */
-
-
-/* smt_sw.c */
-
-extern int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb,
-			  int smt_h_offset, int payload_len);
-extern int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs,
-			  int n);
-
-/* smt_incoming.c */
-
-struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,
-				      struct sk_buff *skb);
-
-bool smt_record_complete(struct homa_rpc *rpc, struct sk_buff *skb);
-
-int smt_data_offset(struct sk_buff *skb);
-
-int smt_rpc_alloc_server_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc);
-
-#endif /* _SMT_PLUMBING_H */

@@ -133,6 +133,31 @@ struct smt_rpc_sw_context {
 	u8 rec_seq[TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE];
 };
 
+#ifdef CONFIG_SMT_HW
+struct smt_hw_context_tx {
+	int num_tx_queues;
+	int start_queue_id;
+	struct net_device *netdev;
+	atomic_t num_current_rpcs;
+	atomic_t num_driver_states;
+	atomic_t last_driver_state_used; /* round robin */
+	void **driver_states;
+};
+
+struct smt_rpc_hw_context_tx {
+	void *driver_state;
+	int queue_idx;
+	u8 rec_seq[TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE];
+};
+
+enum smt_ktls_del_offload_ctx_dir {
+	SMT_TCPTLS_OFFLOAD_CTX_DIR_RX,
+	SMT_TCPTLS_OFFLOAD_CTX_DIR_TX,
+	SMT_OFFLOAD_CTX_DIR_RX,
+	SMT_OFFLOAD_CTX_DIR_TX,
+};
+#endif /* CONFIG_SMT_HW */
+
 struct smt_sock {
 	struct hlist_head ctx_buckets[HOMA_SERVER_RPC_BUCKETS];
 	struct smt_context *reuse_ctx;
@@ -146,7 +171,7 @@ struct smt_sock {
 
 extern struct kmem_cache *smt_ctx_kmem;
 
-int smt_ctx_select(struct homa_sock *hsk, sockptr_t optval,
+int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 				  unsigned int optlen, int tx);
 
 int __smt_sock_init(struct homa_sock *hsk, struct homa *homa);
@@ -184,15 +209,34 @@ static inline bool smt_bigint_increment(u8 *seq, int len)
 }
 
 int smt_sw_set_offload(struct smt_context *ctx, int tx);
-void smt_sw_release_resources(struct smt_context *ctx, int tx);
 int smt_sw_init_rpc(struct homa_rpc *rpc, int tx);
-void smt_sw_release_rpc(struct homa_rpc *rpc, int tx);
+
 int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb,
 		   int smt_h_offset, int payload_len);
-int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n);
+
+void smt_sw_release_rpc(struct homa_rpc *rpc, int tx);
+void smt_sw_release_resources(struct smt_context *ctx, int tx);
+
+#ifdef CONFIG_SMT_HW
+/* smt_device.c */
+
+static inline struct smt_rpc_hw_context_tx *smt_rpc_hw_tx(struct homa_rpc *rpc)
+{
+	return (struct smt_rpc_hw_context_tx *)SMT_RPC(rpc)->smt_rpc_crypto_tx;
+}
+
+int smt_hw_set_offload_tx(struct homa_sock *hsk, struct smt_context *ctx);
+int smt_hw_init_rpc(struct homa_rpc *rpc);
+int smt_device_set_crypto_tx(struct homa_rpc *rpc);
+
+int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
+		       struct sk_buff *skb);
+
+void smt_device_release_rpc_tx(struct homa_rpc *rpc);
+void smt_device_release_resources_tx(struct smt_context *ctx);
+#endif /* CONFIG_SMT_HW */
 
 /* smt_incoming.c */
-
 
 static inline u8 smt_extra_ip_id(struct homa_data_hdr *h)
 {
