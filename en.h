@@ -62,6 +62,14 @@
 #include "en/selq.h"
 #include "lib/sd.h"
 
+#ifdef CONFIG_SMT
+#define IPPROTO_HOMA 146
+#define HOMA_HDR_TYPE_OFFSET (sizeof(__be16)*2+sizeof(__be32)*1+sizeof(char)*3)
+#define HOMA_HDR_TYPE_DATA 0x10
+// #define homals_mlx5_core_info mlx5_core_info
+#define homals_mlx5_core_info(fmt, arg...) {}
+#endif /* CONFIG_SMT */
+
 extern const struct net_device_ops mlx5e_netdev_ops;
 struct page_pool;
 

@@ -190,6 +190,35 @@ static int mlx5e_select_htb_queue(struct mlx5e_priv *priv, struct sk_buff *skb,
 	return mlx5e_htb_get_txq_by_classid(priv->htb, classid);
 }
 
+#ifdef CONFIG_SMT
+static inline int homals_mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
+		       struct net_device *sb_dev) {
+	u8 type;
+	void *priv_tx;
+	int txq_ix = -1;
+
+	if (skb->sk == NULL)
+		goto out;
+
+	if (skb->sk->sk_protocol != IPPROTO_HOMA)
+		goto out;
+
+	type = skb_transport_header(skb)[sizeof(__be16) * 2 + sizeof(__be32) * 2 + sizeof(__u8)];
+	if (type != 0x10)
+		goto out;
+
+	priv_tx = *((void **)(skb->cb + sizeof(skb->cb) - sizeof(void *)));
+	if (!priv_tx)
+		goto out;
+
+	txq_ix = skb_get_queue_mapping(skb);
+	// txq_ix = ((u64) priv_tx) % dev->real_num_tx_queues;
+
+out:
+	return txq_ix;
+}
+#endif /* CONFIG_SMT */
+
 u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
 		       struct net_device *sb_dev)
 {
@@ -208,6 +237,13 @@ u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
 
 	if (likely(!selq->is_special_queues)) {
 		/* No special queues, netdev_pick_tx returns one of the regular ones. */
+
+#ifdef CONFIG_SMT
+		txq_ix = homals_mlx5e_select_queue(dev, skb, sb_dev);
+		if (txq_ix != -1) {
+			return txq_ix;
+		}
+#endif /* CONFIG_SMT */
 
 		txq_ix = netdev_pick_tx(dev, skb, NULL);
 

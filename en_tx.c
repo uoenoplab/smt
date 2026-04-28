@@ -284,7 +284,15 @@ static void mlx5e_sq_xmit_prepare(struct mlx5e_txqsq *sq, struct sk_buff *skb,
 		stats->packets += skb_shinfo(skb)->gso_segs;
 	} else {
 		u8 mode = mlx5e_tx_wqe_inline_mode(sq, skb, accel);
-		u16 ihs = mlx5e_calc_min_inline(mode, skb);
+		u16 ihs;
+
+#if defined(CONFIG_SMT) && defined(CONFIG_MLX5_EN_TLS)
+		if (accel && accel->tls.tls_tisn &&
+		    mode == MLX5_INLINE_MODE_TCP_UDP)
+			ihs = skb_transport_offset(skb) + tcp_hdrlen(skb);
+		else
+#endif
+		ihs = mlx5e_calc_min_inline(mode, skb);
 
 		*attr = (struct mlx5e_tx_attr) {
 			.opcode    = MLX5_OPCODE_SEND,
@@ -697,8 +705,21 @@ netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	/* May send SKBs and WQEs. */
+#ifdef CONFIG_SMT
+	if (skb->sk != NULL && skb->sk->sk_protocol == IPPROTO_HOMA) {
+		// mlx5_core_info(priv->mdev, "%s  skb->sk->sk_protocol %d\n",
+		// 	__func__, skb->sk->sk_protocol);
+		// mlx5_core_info(priv->mdev, "%s call homals_mlx5e_accel_tx_begin\n", __func__);
+		if (unlikely(!homals_mlx5e_accel_tx_begin(dev, sq, skb, &accel)))
+			return NETDEV_TX_OK;
+	} else {
+		if (unlikely(!mlx5e_accel_tx_begin(dev, sq, skb, &accel)))
+			return NETDEV_TX_OK;
+	}
+#else
 	if (unlikely(!mlx5e_accel_tx_begin(dev, sq, skb, &accel)))
 		return NETDEV_TX_OK;
+#endif /* CONFIG_SMT */
 
 	mlx5e_sq_xmit_prepare(sq, skb, &accel, &attr);
 
