@@ -709,8 +709,8 @@ netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb->sk != NULL && skb->sk->sk_protocol == IPPROTO_HOMA) {
 		// mlx5_core_info(priv->mdev, "%s  skb->sk->sk_protocol %d\n",
 		// 	__func__, skb->sk->sk_protocol);
-		// mlx5_core_info(priv->mdev, "%s call homals_mlx5e_accel_tx_begin\n", __func__);
-		if (unlikely(!homals_mlx5e_accel_tx_begin(dev, sq, skb, &accel)))
+		// mlx5_core_info(priv->mdev, "%s call smt_mlx5e_accel_tx_begin\n", __func__);
+		if (unlikely(!smt_mlx5e_accel_tx_begin(dev, sq, skb, &accel)))
 			return NETDEV_TX_OK;
 	} else {
 		if (unlikely(!mlx5e_accel_tx_begin(dev, sq, skb, &accel)))

@@ -122,7 +122,7 @@ struct mlx5e_accel_tx_state {
 };
 
 #ifdef CONFIG_SMT
-static inline bool homals_mlx5e_accel_tx_begin(struct net_device *dev,
+static inline bool smt_mlx5e_accel_tx_begin(struct net_device *dev,
 					struct mlx5e_txqsq *sq,
 					struct sk_buff *skb,
 					struct mlx5e_accel_tx_state *state)
@@ -130,7 +130,7 @@ static inline bool homals_mlx5e_accel_tx_begin(struct net_device *dev,
 	#ifdef CONFIG_MLX5_EN_TLS
 	/* May send SKBs and WQEs. */
 	// if (mlx5e_ktls_skb_offloaded(skb))
-		if (unlikely(!homals_mlx5e_ktls_handle_tx_skb(dev, sq, skb,
+		if (unlikely(!smt_mlx5e_ktls_handle_tx_skb(dev, sq, skb,
 						&state->tls)))
 			return false;
 	#endif

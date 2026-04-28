@@ -452,7 +452,7 @@ static struct mlx5e_ktls_offload_context_tx *pool_pop(struct mlx5e_tls_tx_pool *
 /* End of pool API */
 
 #ifdef CONFIG_SMT
-int homals_mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
+int smt_mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
 			   struct tls_crypto_info *crypto_info,
 			   void **driver_state_void,
 			   u32 start_offload_tcp_sn)
@@ -488,7 +488,7 @@ int homals_mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
 		goto err_pool_push;
 	}
 
-	homals_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
+	smt_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
 
 	dek = mlx5_ktls_create_key(priv->tls->dek_pool, crypto_info);
 	if (IS_ERR(dek)) {
@@ -500,7 +500,7 @@ int homals_mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
 	priv_tx->expected_seq = start_offload_tcp_sn;
 	// priv_tx->tx_ctx = tls_offload_ctx_tx(tls_ctx);
 
-	homals_mlx5_core_info(priv->mdev, "%s priv_tx %px\n", __func__, priv_tx);
+	smt_mlx5_core_info(priv->mdev, "%s priv_tx %px\n", __func__, priv_tx);
 
 	*driver_state = priv_tx;
 	priv_tx->ctx_post_pending = true;
@@ -571,7 +571,7 @@ err_pool_push:
 }
 
 #ifdef CONFIG_SMT
-void homals_mlx5e_ktls_del_tx(struct net_device *netdev, void *priv_tx_void)
+void smt_mlx5e_ktls_del_tx(struct net_device *netdev, void *priv_tx_void)
 {
 	struct mlx5e_ktls_offload_context_tx *priv_tx =
 		(struct mlx5e_ktls_offload_context_tx *)priv_tx_void;
@@ -904,32 +904,32 @@ err_out:
 }
 
 #ifdef CONFIG_SMT
-static inline void homals_hexdump(struct mlx5_core_dev *mdev, const char *title, unsigned char *buf,
+static inline void smt_hexdump(struct mlx5_core_dev *mdev, const char *title, unsigned char *buf,
 			   unsigned int len)
 {
 	char line[3*16+1]; // 16 bytes with space in Hex
 	int i = 0;
-	homals_mlx5_core_info(mdev, "%s\n", title);
+	smt_mlx5_core_info(mdev, "%s\n", title);
 	i = 0;
 	while (len--) {
 		sprintf(&line[3*i], "%02x ", *buf++);
 		i += 1;
 		if (i == 16) {
-			homals_mlx5_core_info(mdev, "%s\n", line);
+			smt_mlx5_core_info(mdev, "%s\n", line);
 			i = 0;
 		}
 	}
 	if (i != 0)
-		homals_mlx5_core_info(mdev, "%s", line);
+		smt_mlx5_core_info(mdev, "%s", line);
 }
 
-bool homals_mlx5e_ktls_handle_tx_skb(struct net_device *netdev, struct mlx5e_txqsq *sq,
+bool smt_mlx5e_ktls_handle_tx_skb(struct net_device *netdev, struct mlx5e_txqsq *sq,
 			      struct sk_buff *skb,
 			      struct mlx5e_accel_tx_tls_state *state)
 {
 	struct mlx5e_ktls_offload_context_tx *priv_tx;
 	struct mlx5e_sq_stats *stats = sq->stats;
-	//unsigned long homals_resync_lock_flags;
+	//unsigned long smt_resync_lock_flags;
 	//struct net_device *tls_netdev;
 	int datalen;
 	u8 *skb_rec_seq;
@@ -946,7 +946,7 @@ bool homals_mlx5e_ktls_handle_tx_skb(struct net_device *netdev, struct mlx5e_txq
 	if (!priv_tx)
 		return true;
 
-	homals_mlx5_core_info(priv_tx->mdev, "homals_mlx5e_accel_tx_begin "
+	smt_mlx5_core_info(priv_tx->mdev, "smt_mlx5e_accel_tx_begin "
 	"skb->len %d skb_tcp_all_headers(skb) %d", skb->len, skb_tcp_all_headers(skb));
 
 	datalen = skb->len - skb_tcp_all_headers(skb);
@@ -969,7 +969,7 @@ bool homals_mlx5e_ktls_handle_tx_skb(struct net_device *netdev, struct mlx5e_txq
 
 	skb_rec_seq = skb->data + skb_tcp_all_headers(skb) + 5;
 
-	// spin_lock_irqsave(&homals_resync_lock, homals_resync_lock_flags);
+	// spin_lock_irqsave(&smt_resync_lock, smt_resync_lock_flags);
 
 	if (unlikely(mlx5e_ktls_tx_offload_test_and_clear_pending(priv_tx)))
 		mlx5e_ktls_tx_post_param_wqes(sq, priv_tx, false, false);
@@ -984,7 +984,7 @@ bool homals_mlx5e_ktls_handle_tx_skb(struct net_device *netdev, struct mlx5e_txq
 	}
 		priv_tx->expected_seq = skb_rec_seq_sn + 1;
 
-	// spin_unlock_irqrestore(&homals_resync_lock, homals_resync_lock_flags);
+	// spin_unlock_irqrestore(&smt_resync_lock, smt_resync_lock_flags);
 
 	state->tls_tisn = priv_tx->tisn;
 

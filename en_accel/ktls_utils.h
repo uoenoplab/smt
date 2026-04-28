@@ -20,11 +20,11 @@ enum {
 };
 
 #ifdef CONFIG_SMT
-int homals_mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
+int smt_mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
 			   struct tls_crypto_info *crypto_info,
 			   void **driver_state_void,
 			   u32 start_offload_tcp_sn);
-void homals_mlx5e_ktls_del_tx(struct net_device *netdev, void *priv_tx_void);
+void smt_mlx5e_ktls_del_tx(struct net_device *netdev, void *priv_tx_void);
 #endif /* CONFIG_SMT */
 int mlx5e_ktls_add_tx(struct net_device *netdev, struct sock *sk,
 		      struct tls_crypto_info *crypto_info, u32 start_offload_tcp_sn);

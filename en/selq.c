@@ -191,7 +191,7 @@ static int mlx5e_select_htb_queue(struct mlx5e_priv *priv, struct sk_buff *skb,
 }
 
 #ifdef CONFIG_SMT
-static inline int homals_mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
+static inline int smt_mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
 		       struct net_device *sb_dev) {
 	u8 type;
 	void *priv_tx;
@@ -239,7 +239,7 @@ u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
 		/* No special queues, netdev_pick_tx returns one of the regular ones. */
 
 #ifdef CONFIG_SMT
-		txq_ix = homals_mlx5e_select_queue(dev, skb, sb_dev);
+		txq_ix = smt_mlx5e_select_queue(dev, skb, sb_dev);
 		if (txq_ix != -1) {
 			return txq_ix;
 		}

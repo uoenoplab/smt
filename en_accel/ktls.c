@@ -46,31 +46,31 @@ void mlx5_ktls_destroy_key(struct mlx5_crypto_dek_pool *dek_pool,
 }
 
 #ifdef CONFIG_SMT
-struct homals_tls_add_hack {
+struct smt_tls_add_hack {
 	struct tls_crypto_info *crypto_info;
 	void **driver_state;
 };
 
-static int homals_mlx5e_ktls_add(struct net_device *netdev, struct sock *sk,
+static int smt_mlx5e_ktls_add(struct net_device *netdev, struct sock *sk,
 			  enum tls_offload_ctx_dir direction,
-			  struct homals_tls_add_hack *tls_add_hack,
+			  struct smt_tls_add_hack *tls_add_hack,
 			  u32 start_offload_tcp_sn)
 {
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 	struct mlx5_core_dev *mdev = priv->mdev;
 	int err;
 
-	homals_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
-	homals_mlx5_core_info(priv->mdev, "%s tls_add_hack %px tls_add_hack->crypto_info %px tls_add_hack->driver_state %px \n",
+	smt_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
+	smt_mlx5_core_info(priv->mdev, "%s tls_add_hack %px tls_add_hack->crypto_info %px tls_add_hack->driver_state %px \n",
 		__func__, tls_add_hack, tls_add_hack->crypto_info, tls_add_hack->driver_state);
-	homals_mlx5_core_info(priv->mdev, "%s crypto_info->version %X crypto_info->cipher_type %X\n",
+	smt_mlx5_core_info(priv->mdev, "%s crypto_info->version %X crypto_info->cipher_type %X\n",
 		__func__, tls_add_hack->crypto_info->version, tls_add_hack->crypto_info->cipher_type);
 
 	if (!mlx5e_ktls_type_check(mdev, tls_add_hack->crypto_info))
 		return -EOPNOTSUPP;
 
 	if (direction == TLS_OFFLOAD_CTX_DIR_TX)
-		err = homals_mlx5e_ktls_add_tx(netdev, sk,
+		err = smt_mlx5e_ktls_add_tx(netdev, sk,
 			tls_add_hack->crypto_info,
 			tls_add_hack->driver_state,
 			start_offload_tcp_sn);
@@ -91,12 +91,12 @@ static int mlx5e_ktls_add(struct net_device *netdev, struct sock *sk,
 	int err;
 
 #ifdef CONFIG_SMT
-	homals_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
+	smt_mlx5_core_info(priv->mdev, "%s invoked\n", __func__);
 
 	// HOMA
 	if (sk->sk_protocol == IPPROTO_HOMA)
-		return homals_mlx5e_ktls_add(netdev, sk, direction,
-			(struct homals_tls_add_hack *)crypto_info, start_offload_tcp_sn);
+		return smt_mlx5e_ktls_add(netdev, sk, direction,
+			(struct smt_tls_add_hack *)crypto_info, start_offload_tcp_sn);
 #endif /* CONFIG_SMT */
 
 	if (!mlx5e_ktls_type_check(mdev, crypto_info))
@@ -111,11 +111,11 @@ static int mlx5e_ktls_add(struct net_device *netdev, struct sock *sk,
 }
 
 #ifdef CONFIG_SMT
-enum homals_ktls_del_offload_ctx_dir {
-	TCPTLS_OFFLOAD_CTX_DIR_RX,
-	TCPTLS_OFFLOAD_CTX_DIR_TX,
-	HOMALS_OFFLOAD_CTX_DIR_RX,
-	HOMALS_OFFLOAD_CTX_DIR_TX,
+enum smt_ktls_del_offload_ctx_dir {
+	SMT_TCPTLS_OFFLOAD_CTX_DIR_RX,
+	SMT_TCPTLS_OFFLOAD_CTX_DIR_TX,
+	SMT_OFFLOAD_CTX_DIR_RX,
+	SMT_OFFLOAD_CTX_DIR_TX,
 };
 #endif /* CONFIG_SMT */
 
@@ -124,16 +124,16 @@ static void mlx5e_ktls_del(struct net_device *netdev,
 			   enum tls_offload_ctx_dir direction)
 {
 #ifdef CONFIG_SMT
-	enum homals_ktls_del_offload_ctx_dir direction_homals =
-		(enum homals_ktls_del_offload_ctx_dir) direction;
+	enum smt_ktls_del_offload_ctx_dir direction_smt =
+		(enum smt_ktls_del_offload_ctx_dir) direction;
 
 	if (direction == TLS_OFFLOAD_CTX_DIR_TX)
 		mlx5e_ktls_del_tx(netdev, tls_ctx);
 	if (direction == TLS_OFFLOAD_CTX_DIR_RX)
 		mlx5e_ktls_del_rx(netdev, tls_ctx);
 
-	if (direction_homals == HOMALS_OFFLOAD_CTX_DIR_TX)
-		homals_mlx5e_ktls_del_tx(netdev, (void *)tls_ctx);
+	if (direction_smt == SMT_OFFLOAD_CTX_DIR_TX)
+		smt_mlx5e_ktls_del_tx(netdev, (void *)tls_ctx);
 #else
 	if (direction == TLS_OFFLOAD_CTX_DIR_TX)
 		mlx5e_ktls_del_tx(netdev, tls_ctx);
