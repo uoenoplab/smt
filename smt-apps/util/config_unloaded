@@ -23,7 +23,7 @@ usage() {
 Usage: sudo ./config_unloaded [-i IFNAME] [-a IPADDR] [-m MODE]
   -i IFNAME  NIC interface name (e.g., ens1f1np1). Will prompt if unset.
   -a IPADDR  IP address (CIDR) to assign to IFNAME (e.g., 10.0.0.1/24). Will prompt if unset.
-  -m MODE    One of: tcp, ktls-sw, homa, smt-sw. Will prompt if unset.
+  -m MODE    One of: tcp, ktls-sw, homa, smt-sw, smt-hw. Will prompt if unset.
   -h         Show this help and exit.
 EOF
   exit "${1:-1}"
@@ -54,10 +54,10 @@ if [[ -z "$IFNAME" ]]; then
 fi
 
 if [[ -z "$MODE" ]]; then
-  read -rp "Enter mode (tcp|ktls-sw|homa|smt-sw): " MODE
+  read -rp "Enter mode (tcp|ktls-sw|homa|smt-sw|smt-hw): " MODE
 fi
 case "$MODE" in
-  tcp|ktls-sw|homa|smt-sw) ;;
+  tcp|ktls-sw|homa|smt-sw|smt-hw) ;;
   *) echo "[!] Invalid mode: $MODE" >&2; usage ;;
 esac
 
@@ -76,10 +76,20 @@ echo "--------------------------------------------------"
 echo "sudo ${BASH_SOURCE[0]} -i ${IFNAME} -a ${IPADDR} -m ${MODE}"
 echo "--------------------------------------------------"
 
-if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" ]]; then
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
   echo "[+] Reloading homa module"
   if lsmod | grep -q '^homa '; then
-    rmmod homa || { echo "[!] rmmod homa failed (still in use?)" >&2; exit 1; }
+    pkill -9 -x simple_server 2>/dev/null || true
+    pkill -9 -x simple_client 2>/dev/null || true
+    for i in 1 2 3 4 5; do
+      if rmmod homa 2>/dev/null; then break; fi
+      echo "[..] homa busy (refcount=$(awk '$1==\"homa\"{print $3}' /proc/modules)), retry $i" >&2
+      sleep 1
+    done
+    if lsmod | grep -q '^homa '; then
+      echo "[!] rmmod homa failed (still in use?)" >&2
+      exit 1
+    fi
   fi
   insmod "${repo_root}/homa.ko"
   lsmod | grep -q '^homa ' || { echo "[!] homa not loaded after insmod" >&2; exit 1; }
@@ -94,18 +104,35 @@ cpupower frequency-set -g performance
 echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo || echo 1 > /sys/devices/system/cpu/cpufreq/boost
 
 echo "[+] Setting NIC coalesce on ${IFNAME}"
-ethtool -C "$IFNAME" adaptive-rx off rx-usecs 5 rx-frames 1
+ethtool -C "$IFNAME" adaptive-rx off rx-usecs 0 rx-frames 1
 
-echo "[+] Disabling NIC TLS TX offload on ${IFNAME}"
-ethtool -K "$IFNAME" tls-hw-tx-offload off || true
+if [[ "$MODE" == "smt-hw" ]]; then
+  echo "[+] Enabling NIC TLS TX offload on ${IFNAME}"
+  ethtool -K "$IFNAME" tls-hw-tx-offload on || {
+    echo "[!] tls-hw-tx-offload could not be enabled — patched mlx5_core required" >&2
+    exit 1
+  }
+else
+  echo "[+] Disabling NIC TLS TX offload on ${IFNAME}"
+  ethtool -K "$IFNAME" tls-hw-tx-offload off || true
+fi
 
-if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" ]]; then
-  echo "[+] Applying Homa sysctls"
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+  echo "[+] Applying Homa sysctls (cloudlab 25G profile)"
   sysctl /net/homa/link_mbps=100000
-  sysctl /net/homa/unsched_bytes=60000
-  sysctl /net/homa/max_incoming=480000
   sysctl /net/homa/num_priorities=8
+  sysctl /net/homa/max_nic_est_backlog_usecs=5
+  sysctl /net/homa/unsched_bytes=60000
+  sysctl /net/homa/window=100000
+  sysctl /net/homa/max_incoming=480000
   sysctl /net/homa/max_gso_size=10000
+  # gro_busy_usecs: leave at module default (5). We don't invoke cloudlab `lb gen2`,
+  # which would force =0 for per-packet bypass; default lets GRO batch on 100G.
+fi
+
+if [[ "$MODE" == "smt-hw" ]]; then
+  echo "[+] Setting smt_hardware_interface=${IFNAME}"
+  sysctl /net/homa/smt_hardware_interface="$IFNAME"
 fi
 
 echo "[+] Setting IRQ affinity policy (onecore) on ${IFNAME} (pin all NIC IRQs to core 0)"

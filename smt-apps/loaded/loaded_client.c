@@ -850,7 +850,13 @@ static void *thread_homa(void *args) {
     } else if (targs->pending_count > 0) {
       timeout_ms = 0;          // pending but no rate constraint -> immediate
     } else {
-      timeout_ms = -1;         // nothing pending; block on reply
+      /* Worker threads have SIGINT masked (see setup_sigaction). Cap the
+       * wait so we re-check sigint_received periodically — otherwise we
+       * block indefinitely on epoll_wait when all RPCs are in-flight and
+       * the bench timeout fires, ending up force-killed via SIGUSR1 with
+       * no stats printed.
+       */
+      timeout_ms = 100;
     }
 
     int event_count = epoll_wait(epoll_fd, events,
