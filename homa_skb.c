@@ -171,10 +171,19 @@ void homa_skb_stash_pages(struct homa *homa, int length)
  * @skb:      Skbuff for which additional space is needed.
  * @length:   The preferred number of bytes to append; modified to hold
  *            the actual number allocated, which may be less.
+ * @contig_only: (CONFIG_SMT) if true, refuse partial allocations: advance
+ *               to a fresh page when the current one can't fit the full
+ *               request, and return NULL if even a fresh page can't.
+ *               Caller must also ensure @*length <= HOMA_SKB_PAGE_SIZE
+ *               and nr_frags < HOMA_MAX_SKB_FRAGS.
  * Return:    Pointer to the new space, or NULL if space couldn't be
  *            allocated.
  */
-void *homa_skb_extend_frags(struct homa *homa, struct sk_buff *skb, int *length)
+void *homa_skb_extend_frags(struct homa *homa, struct sk_buff *skb, int *length
+#ifdef CONFIG_SMT
+			    , bool contig_only
+#endif
+			    )
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
 	struct homa_skb_core *skb_core;
@@ -192,10 +201,17 @@ void *homa_skb_extend_frags(struct homa *homa, struct sk_buff *skb, int *length)
 		    skb_core->page_inuse < skb_core->page_size &&
 		    (frag->offset + skb_frag_size(frag)) ==
 			    skb_core->page_inuse) {
-			if ((skb_core->page_size - skb_core->page_inuse) <
-			    actual_size)
-				actual_size = skb_core->page_size -
-					      skb_core->page_inuse;
+			int avail = skb_core->page_size - skb_core->page_inuse;
+
+#ifdef CONFIG_SMT
+			/* contig_only with a partial: fall through to the
+			 * fresh-page path below instead of taking the partial.
+			 */
+			if (contig_only && avail < actual_size)
+				goto fresh_page;
+#endif
+			if (avail < actual_size)
+				actual_size = avail;
 			*length = actual_size;
 			skb_frag_size_add(frag, actual_size);
 			result = page_address(skb_frag_page(frag)) +
@@ -206,14 +222,30 @@ void *homa_skb_extend_frags(struct homa *homa, struct sk_buff *skb, int *length)
 		}
 	}
 
+#ifdef CONFIG_SMT
+fresh_page:
+#endif
 	/* Need to add a new fragment to the skb. */
 	skb_core->page_inuse = ALIGN(skb_core->page_inuse, SMP_CACHE_BYTES);
-	if (skb_core->page_inuse >= skb_core->page_size) {
+	if (skb_core->page_inuse >= skb_core->page_size
+#ifdef CONFIG_SMT
+	    || (contig_only &&
+		(skb_core->page_size - skb_core->page_inuse) < actual_size)
+#endif
+	   ) {
 		if (!homa_skb_page_alloc(homa, skb_core)) {
 			result = NULL;
 			goto done;
 		}
 	}
+#ifdef CONFIG_SMT
+	if (contig_only &&
+	    (skb_core->page_size - skb_core->page_inuse) < actual_size) {
+		/* Even a fresh page can't hold the contig request. */
+		result = NULL;
+		goto done;
+	}
+#endif
 	if ((skb_core->page_size - skb_core->page_inuse) < actual_size)
 		actual_size = skb_core->page_size - skb_core->page_inuse;
 	frag = &shinfo->frags[shinfo->nr_frags];
@@ -326,7 +358,11 @@ int homa_skb_append_to_frag(struct homa *homa, struct sk_buff *skb, void *buf,
 
 	while (length > 0) {
 		chunk_length = length;
-		dst = (char *)homa_skb_extend_frags(homa, skb, &chunk_length);
+		dst = (char *)homa_skb_extend_frags(homa, skb, &chunk_length
+#ifdef CONFIG_SMT
+						    , false
+#endif
+						    );
 		if (!dst)
 			return -ENOMEM;
 		memcpy(dst, src, chunk_length);
@@ -354,7 +390,11 @@ int homa_skb_append_from_iter(struct homa *homa, struct sk_buff *skb,
 
 	while (length > 0) {
 		chunk_length = length;
-		dst = (char *)homa_skb_extend_frags(homa, skb, &chunk_length);
+		dst = (char *)homa_skb_extend_frags(homa, skb, &chunk_length
+#ifdef CONFIG_SMT
+						    , false
+#endif
+						    );
 		if (!dst)
 			return -ENOMEM;
 		if (copy_from_iter(dst, chunk_length, iter) != chunk_length)

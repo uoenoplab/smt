@@ -66,8 +66,8 @@ SERVER_PORTS_TCP="2000"
 SIZES=(${SIZES:-64 1024 8192})
 RPCS=(${RPCS:-1 25 50 75 100 125 150})
 
-declare -A PROTO=([smt]=smt [homa]=homa [tcp]=tcp [ktls]=tcp_ktls [nocrypto]=smt [smt-hw]=smt)
-declare -A CONFIG_MODE=([smt]=smt-sw [homa]=homa [tcp]=tcp [ktls]=ktls-sw [nocrypto]=smt-sw [smt-hw]=smt-hw)
+declare -A PROTO=([smt]=smt [homa]=homa [tcp]=tcp [ktls]=tcp_ktls [ktls-hw]=tcp_ktls [nocrypto]=smt [smt-hw]=smt)
+declare -A CONFIG_MODE=([smt]=smt-sw [homa]=homa [tcp]=tcp [ktls]=ktls-sw [ktls-hw]=ktls-hw [nocrypto]=smt-sw [smt-hw]=smt-hw)
 multihome_modes="smt homa nocrypto smt-hw"
 
 # CSV header. config column is empty when CONFIGS unset (backward-compat).

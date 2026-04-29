@@ -514,6 +514,12 @@ struct homa {
 #endif /* See strip.py */
 
 #ifdef CONFIG_SMT
+	/**
+	 * @smt_sw_pool_init: max # of crypto pool entries pre-allocated
+	 * per smt_context (capped by num_online_cpus()). Default 4.
+	 */
+	int smt_sw_pool_init;
+
 #ifdef CONFIG_SMT_HW
 	/**
 	 * @smt_hardware_interface: netdev name to use for SMT TX HW offload

@@ -420,6 +420,13 @@ static struct ctl_table homa_ctl_table[] = {
 		.proc_handler	= homa_dointvec
 	},
 #ifdef CONFIG_SMT
+	{
+		.procname	= "smt_sw_pool_init",
+		.data		= OFFSET(smt_sw_pool_init),
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= homa_dointvec
+	},
 #ifdef CONFIG_SMT_HW
 	{
 		.procname	= "smt_hardware_interface",

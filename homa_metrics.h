@@ -826,6 +826,46 @@ struct homa_metrics {
 	/** @smt_ctx_dst_mtu_cycles: TSC cycles in dst_mtu. */
 	u64 smt_ctx_dst_mtu_cycles;
 
+	/** @smt_sw_encrypt_calls: smt_sw_encrypt invocations. */
+	u64 smt_sw_encrypt_calls;
+	/** @smt_sw_encrypt_cycles: TSC cycles in smt_sw_encrypt (full). */
+	u64 smt_sw_encrypt_cycles;
+
+	/** @smt_sw_decrypt_calls: smt_sw_decrypt invocations. */
+	u64 smt_sw_decrypt_calls;
+	/** @smt_sw_decrypt_cycles: TSC cycles in smt_sw_decrypt (full). */
+	u64 smt_sw_decrypt_cycles;
+
+	/** @smt_sw_aead_enc_calls: AEAD encrypt invocations. */
+	u64 smt_sw_aead_enc_calls;
+	/** @smt_sw_aead_enc_cycles: TSC cycles in crypto_aead_encrypt path. */
+	u64 smt_sw_aead_enc_cycles;
+
+	/** @smt_sw_aead_dec_calls: AEAD decrypt invocations. */
+	u64 smt_sw_aead_dec_calls;
+	/** @smt_sw_aead_dec_cycles: TSC cycles in crypto_aead_decrypt path. */
+	u64 smt_sw_aead_dec_cycles;
+
+	/** @smt_sw_pop_calls: smt_sw_pop_crypto invocations. */
+	u64 smt_sw_pop_calls;
+	/** @smt_sw_pop_cycles: TSC cycles in smt_sw_pop_crypto (lock+pop). */
+	u64 smt_sw_pop_cycles;
+
+	/** @smt_sw_push_calls: smt_sw_push_crypto invocations. */
+	u64 smt_sw_push_calls;
+	/** @smt_sw_push_cycles: TSC cycles in smt_sw_push_crypto (lock+push). */
+	u64 smt_sw_push_cycles;
+
+	/** @smt_sw_borrow_calls: smt_sw_borrow_crypto invocations (full). */
+	u64 smt_sw_borrow_calls;
+	/** @smt_sw_borrow_cycles: TSC cycles in smt_sw_borrow_crypto. */
+	u64 smt_sw_borrow_cycles;
+
+	/** @smt_sw_alloc_calls: smt_sw_alloc_crypto invocations (pool grow). */
+	u64 smt_sw_alloc_calls;
+	/** @smt_sw_alloc_cycles: TSC cycles in smt_sw_alloc_crypto. */
+	u64 smt_sw_alloc_cycles;
+
 	/** @temp: For temporary use during testing. */
 #define NUM_TEMP_METRICS 10
 	u64 temp[NUM_TEMP_METRICS];

@@ -83,9 +83,12 @@ int homa_fill_data_interleaved(struct homa_rpc *rpc, struct sk_buff *skb,
 	__must_hold(rpc->bucket->lock)
 {
 	struct homa_skb_info *homa_info = homa_get_skb_info(skb);
-	/* first segment is smaller for TLS header */
-	int seg_length = homa_info->seg_length - pad_info.hdr_len;
+	int seg_length = homa_info->seg_length;
 	int bytes_left = homa_info->data_bytes;
+#ifdef CONFIG_SMT
+	/* first segment is smaller for TLS header */
+	seg_length -= pad_info.hdr_len;
+#endif
 	int offset = homa_info->offset;
 	int err;
 
@@ -542,8 +545,10 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 
 	smt_pr_devel("%s:  rpc_id=%lld msg_len=%zu mtu=%d ip_hdr_len=%d homa_data_hdr=%zu max_seg_data=%d\n", __func__,
 	       rpc->id, iter->count, mtu, rpc->hsk->ip_header_length, sizeof(struct homa_data_hdr), max_seg_data);
+#ifdef CONFIG_SMT
 	smt_pr_devel("%s:  hdr_len=%d trl_len=%d\n", __func__,
 	       pad_info.hdr_len, pad_info.trl_len);
+#endif
 	if (gso_size > rpc->hsk->homa->max_gso_size)
 		gso_size = rpc->hsk->homa->max_gso_size;
 	dst_release(dst);
@@ -609,12 +614,16 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 
 		homa_rpc_unlock(rpc);
 		skb_msg_data_bytes = max_gso_data;
+#ifdef CONFIG_SMT
 		// reserve bytes for smt header and trailer
 		skb_msg_data_bytes -= pad_info.hdr_len + pad_info.trl_len;
+#endif
 		offset = rpc->msgout.length - bytes_left;
 
+#ifdef CONFIG_SMT
 		smt_pr_devel("%s:  max_gso_data=%d pad_hdr=%d pad_trl=%d skb_msg_data_bytes=%d offset=%d bytes_left=%d\n", __func__,
 		       max_gso_data, pad_info.hdr_len, pad_info.trl_len, skb_msg_data_bytes, offset, bytes_left);
+#endif
 #ifndef __STRIP__ /* See strip.py */
 		/* Skip the unscheduled-boundary truncation only for SMT-HW
 		 * RPCs: NIC TLS-GSO needs uniform TLS records, an odd-sized

@@ -85,6 +85,8 @@ int smt_load(struct homa *homa)
 	pr_notice("SMT compiled without actual encrypt/decrypt, only for test\n");
 #endif
 
+	homa->smt_sw_pool_init = 4;
+
 #ifdef CONFIG_SMT_HW
 	homa->smt_hardware_state_threshold = 1;
 	strscpy(homa->smt_hardware_interface, "ens1f1np1",
@@ -100,7 +102,7 @@ int smt_load(struct homa *homa)
 }
 
 int smt_encrypt(struct homa_rpc *rpc, struct sk_buff *skb, u8 *smt_h,
-		int smt_h_offset, int payload_len)
+		int payload_len)
 {
 	struct smt_context *ctx = SMT_RPC(rpc)->ctx;
 
@@ -117,7 +119,7 @@ int smt_encrypt(struct homa_rpc *rpc, struct sk_buff *skb, u8 *smt_h,
 	}
 #endif
 	if (ctx->tx_conf == SMT_SW)
-		return smt_sw_encrypt(rpc, skb, smt_h_offset, payload_len);
+		return smt_sw_encrypt(rpc, skb, smt_h, payload_len);
 	return 0;
 }
 
@@ -146,10 +148,6 @@ void smt_rpc_release(struct homa_rpc *rpc)
 	if (rpc->smt.ctx->tx_conf == SMT_HW)
 		smt_device_release_rpc_tx(rpc);
 #endif
-	if (rpc->smt.ctx->tx_conf == SMT_SW)
-		smt_sw_release_rpc(rpc, 1);
-	if (rpc->smt.ctx->rx_conf == SMT_SW)
-		smt_sw_release_rpc(rpc, 0);
 
 	rpc->smt.ctx = NULL;
 }

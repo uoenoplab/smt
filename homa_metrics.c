@@ -459,6 +459,38 @@ char *homa_metrics_print(void)
 		  "smt_rpc_ctx_init:dst_mtu invocations\n");
 		M("smt_ctx_dst_mtu_cycles", m->smt_ctx_dst_mtu_cycles,
 		  "smt_rpc_ctx_init:dst_mtu TSC cycles\n");
+		M("smt_sw_encrypt_calls", m->smt_sw_encrypt_calls,
+		  "smt_sw_encrypt invocations\n");
+		M("smt_sw_encrypt_cycles", m->smt_sw_encrypt_cycles,
+		  "TSC cycles in smt_sw_encrypt (full)\n");
+		M("smt_sw_decrypt_calls", m->smt_sw_decrypt_calls,
+		  "smt_sw_decrypt invocations\n");
+		M("smt_sw_decrypt_cycles", m->smt_sw_decrypt_cycles,
+		  "TSC cycles in smt_sw_decrypt (full)\n");
+		M("smt_sw_aead_enc_calls", m->smt_sw_aead_enc_calls,
+		  "AEAD encrypt invocations (smt_sw)\n");
+		M("smt_sw_aead_enc_cycles", m->smt_sw_aead_enc_cycles,
+		  "TSC cycles in crypto_aead_encrypt (smt_sw)\n");
+		M("smt_sw_aead_dec_calls", m->smt_sw_aead_dec_calls,
+		  "AEAD decrypt invocations (smt_sw)\n");
+		M("smt_sw_aead_dec_cycles", m->smt_sw_aead_dec_cycles,
+		  "TSC cycles in crypto_aead_decrypt (smt_sw)\n");
+		M("smt_sw_pop_calls", m->smt_sw_pop_calls,
+		  "smt_sw_pop_crypto invocations\n");
+		M("smt_sw_pop_cycles", m->smt_sw_pop_cycles,
+		  "TSC cycles in smt_sw_pop_crypto (lock+pop)\n");
+		M("smt_sw_push_calls", m->smt_sw_push_calls,
+		  "smt_sw_push_crypto invocations\n");
+		M("smt_sw_push_cycles", m->smt_sw_push_cycles,
+		  "TSC cycles in smt_sw_push_crypto (lock+push)\n");
+		M("smt_sw_borrow_calls", m->smt_sw_borrow_calls,
+		  "smt_sw_borrow_crypto invocations\n");
+		M("smt_sw_borrow_cycles", m->smt_sw_borrow_cycles,
+		  "TSC cycles in smt_sw_borrow_crypto\n");
+		M("smt_sw_alloc_calls", m->smt_sw_alloc_calls,
+		  "smt_sw_alloc_crypto invocations (pool grow)\n");
+		M("smt_sw_alloc_cycles", m->smt_sw_alloc_cycles,
+		  "TSC cycles in smt_sw_alloc_crypto\n");
 		for (i = 0; i < NUM_TEMP_METRICS;  i++) {
 			snprintf(name, sizeof(name), "temp%d", i);
 			M(name, m->temp[i], "Temporary use in testing\n");

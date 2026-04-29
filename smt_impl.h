@@ -125,11 +125,8 @@ struct smt_sw_context {
  * Size must stay <= 40 bytes.
  */
 struct smt_rpc_sw_context {
-	struct smt_sw_crypto *crypto;
 	u8 iv[TLS_CIPHER_AES_GCM_128_IV_SIZE +
 	      TLS_CIPHER_AES_GCM_128_SALT_SIZE];
-	u8 nonce[TLS_CIPHER_AES_GCM_128_IV_SIZE +
-		 TLS_CIPHER_AES_GCM_128_SALT_SIZE];
 	u8 rec_seq[TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE];
 };
 
@@ -211,10 +208,9 @@ static inline bool smt_bigint_increment(u8 *seq, int len)
 int smt_sw_set_offload(struct smt_context *ctx, int tx);
 int smt_sw_init_rpc(struct homa_rpc *rpc, int tx);
 
-int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb,
-		   int smt_h_offset, int payload_len);
+int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb, u8 *smt_h,
+		   int payload_len);
 
-void smt_sw_release_rpc(struct homa_rpc *rpc, int tx);
 void smt_sw_release_resources(struct smt_context *ctx, int tx);
 
 #ifdef CONFIG_SMT_HW

@@ -109,7 +109,11 @@ void     homa_skb_cache_pages(struct homa *homa, struct page **pages,
 			      int count);
 void     homa_skb_cleanup(struct homa *homa);
 void    *homa_skb_extend_frags(struct homa *homa, struct sk_buff *skb,
-			       int *length);
+			       int *length
+#ifdef CONFIG_SMT
+			       , bool contig_only
+#endif
+			       );
 void     homa_skb_free_tx(struct homa *homa, struct sk_buff *skb);
 void     homa_skb_free_many_tx(struct homa *homa, struct sk_buff **skbs,
 			       int count);

@@ -51,7 +51,7 @@ extern int smt_load(struct homa *homa);
 extern int smt_unload(void);
 
 extern int smt_encrypt(struct homa_rpc *rpc, struct sk_buff *skb, u8 *smt_h,
-		       int smt_h_offset, int payload_len);
+		       int payload_len);
 
 static inline bool is_smt_rpc(struct homa_rpc *rpc) {
 	return rpc->smt.ctx != NULL;
