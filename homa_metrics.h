@@ -793,6 +793,7 @@ struct homa_metrics {
 	/** @homa_copy_to_user_cycles: TSC cycles in homa_copy_to_user. */
 	u64 homa_copy_to_user_cycles;
 
+#ifdef CONFIG_HOMA_SMT_PROFILING
 	/** @smt_rx_calc_calls: calls to smt_calc_rx_logical_info. */
 	u64 smt_rx_calc_calls;
 	/** @smt_rx_calc_cycles: TSC cycles in smt_calc_rx_logical_info. */
@@ -865,6 +866,12 @@ struct homa_metrics {
 	u64 smt_sw_alloc_calls;
 	/** @smt_sw_alloc_cycles: TSC cycles in smt_sw_alloc_crypto. */
 	u64 smt_sw_alloc_cycles;
+
+	/** @smt_copy_to_user_iter_calls: iterations of the while(true) record
+	 * loop in homa_copy_to_user (one per record processed).
+	 */
+	u64 smt_copy_to_user_iter_calls;
+#endif /* CONFIG_HOMA_SMT_PROFILING */
 
 	/** @temp: For temporary use during testing. */
 #define NUM_TEMP_METRICS 10

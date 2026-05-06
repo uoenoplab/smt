@@ -236,24 +236,12 @@ struct homa_rpc *homa_rpc_alloc_server(struct homa_sock *hsk,
 	if (ntohl(h->seg.offset) == 0 && srpc->msgin.num_bpages > 0) {
 		set_bit(RPC_PKTS_READY, &srpc->flags);
 		homa_rpc_handoff(srpc);
-		INC_METRIC(temp[0], 1);
-	} else {
-		INC_METRIC(temp[1], 1);
-		if (ntohl(h->seg.offset) != 0)
-			INC_METRIC(temp[2], 1);
-		if (srpc->msgin.num_bpages == 0)
-			INC_METRIC(temp[3], 1);
 	}
 #ifdef CONFIG_SMT
-	} else {
-		if (srpc->msgin.num_bpages > 0 &&
-		    homa_data_len(skb) >= srpc->msgin.length) {
-			set_bit(RPC_PKTS_READY, &srpc->flags);
-			homa_rpc_handoff(srpc);
-			INC_METRIC(temp[4], 1);
-		} else {
-			INC_METRIC(temp[5], 1);
-		}
+	} else if (srpc->msgin.num_bpages > 0 &&
+		   homa_data_len(skb) >= srpc->msgin.length) {
+		set_bit(RPC_PKTS_READY, &srpc->flags);
+		homa_rpc_handoff(srpc);
 	}
 #endif
 	INC_METRIC(requests_received, 1);

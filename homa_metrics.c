@@ -433,6 +433,7 @@ char *homa_metrics_print(void)
 		  "homa_copy_to_user invocations\n");
 		M("homa_copy_to_user_cycles", m->homa_copy_to_user_cycles,
 		  "TSC cycles in homa_copy_to_user\n");
+#ifdef CONFIG_HOMA_SMT_PROFILING
 		M("smt_rx_calc_calls", m->smt_rx_calc_calls,
 		  "smt_calc_rx_logical_info invocations\n");
 		M("smt_rx_calc_cycles", m->smt_rx_calc_cycles,
@@ -491,6 +492,9 @@ char *homa_metrics_print(void)
 		  "smt_sw_alloc_crypto invocations (pool grow)\n");
 		M("smt_sw_alloc_cycles", m->smt_sw_alloc_cycles,
 		  "TSC cycles in smt_sw_alloc_crypto\n");
+		M("smt_copy_to_user_iter_calls", m->smt_copy_to_user_iter_calls,
+		  "homa_copy_to_user record-loop iterations (records processed)\n");
+#endif /* CONFIG_HOMA_SMT_PROFILING */
 		for (i = 0; i < NUM_TEMP_METRICS;  i++) {
 			snprintf(name, sizeof(name), "temp%d", i);
 			M(name, m->temp[i], "Temporary use in testing\n");

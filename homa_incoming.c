@@ -379,6 +379,7 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 	while (true) {
 		struct sk_buff *skb;
 
+		SMT_COUNT(smt_copy_to_user_iter_calls);
 #ifdef CONFIG_SMT
 		int rec_len = 0;
 		int rec_offset = 0;
