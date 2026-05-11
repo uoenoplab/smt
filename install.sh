@@ -26,8 +26,9 @@ if [[ "$REPO_PATH" != "$TARGET_DIR" ]]; then
   sudo cp -ar "$REPO_PATH/." "$TARGET_DIR/"
 fi
 
-echo "[+] Building mlx5_core.ko"
+echo "[+] Building mlx5_core.ko (with -DCONFIG_SMT to enable Homa/SMT branches)"
 cd "$TARGET_DIR"
-sudo make -j"$(getconf _NPROCESSORS_ONLN)" -C "$KERNEL_SRC" M="$TARGET_DIR"
+sudo make -j"$(getconf _NPROCESSORS_ONLN)" -C "$KERNEL_SRC" M="$TARGET_DIR" \
+          KCFLAGS="-DCONFIG_SMT"
 
 echo "[+] Built: $TARGET_DIR/mlx5_core.ko"
