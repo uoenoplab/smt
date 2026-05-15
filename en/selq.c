@@ -203,7 +203,17 @@ static inline int smt_mlx5e_select_queue(struct net_device *dev, struct sk_buff 
 	if (skb->sk->sk_protocol != IPPROTO_HOMA)
 		goto out;
 
-	type = skb_transport_header(skb)[sizeof(__be16) * 2 + sizeof(__be32) * 2 + sizeof(__u8)];
+	/* SMT-FIX: use HOMA_HDR_TYPE_OFFSET (defined in en.h to track the
+	 * homa_common_hdr layout). The previous inline calc
+	 *   sizeof(__be16)*2 + sizeof(__be32)*2 + sizeof(__u8) == 13
+	 * matched the older layout (sport+dport+doff+ack+flags). The current
+	 * smt-ng layout is sport+dport+sequence+ack+type+doff, putting type
+	 * at offset 11. With offset 13 the byte read was never 0x10
+	 * (HOMA_DATA), so this function always returned -1 and the kernel
+	 * hash-picked a TX queue whose NIC TIS was not trained for this
+	 * RPC's TLS context — NIC then emitted the packet as plaintext.
+	 */
+	type = skb_transport_header(skb)[HOMA_HDR_TYPE_OFFSET];
 	if (type != 0x10)
 		goto out;
 
