@@ -379,8 +379,8 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 	while (true) {
 		struct sk_buff *skb;
 
-		SMT_COUNT(smt_copy_to_user_iter_calls);
 #ifdef CONFIG_SMT
+		SMT_COUNT(smt_copy_to_user_iter_calls);
 		int rec_len = 0;
 		int rec_offset = 0;
 		int rec_copied = 0;
@@ -1288,9 +1288,13 @@ int homa_wait_private(struct homa_rpc *rpc, int nonblocking)
 	while (1) {
 		result = 0;
 		if (!rpc->error) {
+#ifdef CONFIG_SMT
 			u64 __t = SMT_TIME_START();
+#endif
 			rpc->error = homa_copy_to_user(rpc);
+#ifdef CONFIG_SMT
 			SMT_TIME_END(homa_copy_to_user, __t);
+#endif
 		}
 		if (rpc->error) {
 			IF_NO_STRIP(avail_immediately = 0);
@@ -1425,9 +1429,13 @@ struct homa_rpc *homa_wait_shared(struct homa_sock *hsk, int nonblocking)
 
 		homa_rpc_lock_preempt(rpc);
 		if (!rpc->error) {
+#ifdef CONFIG_SMT
 			u64 __t = SMT_TIME_START();
+#endif
 			rpc->error = homa_copy_to_user(rpc);
+#ifdef CONFIG_SMT
 			SMT_TIME_END(homa_copy_to_user, __t);
+#endif
 		}
 		if (rpc->error) {
 			if (rpc->state != RPC_DEAD)

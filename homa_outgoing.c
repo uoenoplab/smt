@@ -536,15 +536,19 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 	dst = homa_get_dst(rpc->peer, rpc->hsk);
 	mtu = dst_mtu(dst);
 
+#ifdef CONFIG_SMT
 	smt_pr_devel("%s: peer_addr=%pI6c dst_dev=%s dst_mtu=%d\n", __func__,
 	       &rpc->peer->addr, dst->dev ? dst->dev->name : "NULL", mtu);
+#endif
 
 	max_seg_data = mtu - rpc->hsk->ip_header_length
 			- sizeof(struct homa_data_hdr);
 	gso_size = dst->dev->gso_max_size;
 
+#ifdef CONFIG_SMT
 	smt_pr_devel("%s:  rpc_id=%lld msg_len=%zu mtu=%d ip_hdr_len=%d homa_data_hdr=%zu max_seg_data=%d\n", __func__,
 	       rpc->id, iter->count, mtu, rpc->hsk->ip_header_length, sizeof(struct homa_data_hdr), max_seg_data);
+#endif
 #ifdef CONFIG_SMT
 	smt_pr_devel("%s:  hdr_len=%d trl_len=%d\n", __func__,
 	       pad_info.hdr_len, pad_info.trl_len);
@@ -589,8 +593,10 @@ int homa_message_out_fill(struct homa_rpc *rpc, struct iov_iter *iter, int xmit)
 	UNIT_LOG("; ", "mtu %d, max_seg_data %d, max_gso_data %d",
 		 mtu, max_seg_data, max_gso_data);
 
+#ifdef CONFIG_SMT
 	smt_pr_devel("%s:  gso_size=%d segs_per_gso=%lld max_gso_data=%d\n", __func__,
 	       gso_size, segs_per_gso, max_gso_data);
+#endif
 
 #ifndef __STRIP__ /* See strip.py */
 	rpc->msgout.granted = rpc->msgout.unscheduled;

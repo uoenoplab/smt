@@ -1302,9 +1302,13 @@ int homa_sendmsg(struct sock *sk, struct msghdr *msg, size_t length)
 
 	if (!args.id) {
 		/* This is a request message. */
+#ifdef CONFIG_SMT
 		u64 __t = SMT_TIME_START();
+#endif
 		rpc = homa_rpc_alloc_client(hsk, addr);
+#ifdef CONFIG_SMT
 		SMT_TIME_END(homa_rpc_alloc_client, __t);
+#endif
 		if (IS_ERR(rpc)) {
 			result = PTR_ERR(rpc);
 			rpc = NULL;
@@ -1320,9 +1324,13 @@ int homa_sendmsg(struct sock *sk, struct msghdr *msg, size_t length)
 			   : tt_addr(addr->in6.sin6_addr),
 			   ntohs(addr->in6.sin6_port), rpc->id, length);
 		rpc->completion_cookie = args.completion_cookie;
+#ifdef CONFIG_SMT
 		u64 __t2 = SMT_TIME_START();
+#endif
 		result = homa_message_out_fill(rpc, &msg->msg_iter, 1);
+#ifdef CONFIG_SMT
 		SMT_TIME_END(homa_message_out_fill, __t2);
+#endif
 		if (result)
 			goto error;
 		args.id = rpc->id;
@@ -1377,9 +1385,13 @@ int homa_sendmsg(struct sock *sk, struct msghdr *msg, size_t length)
 		}
 		rpc->state = RPC_OUTGOING;
 
+#ifdef CONFIG_SMT
 		u64 __t3 = SMT_TIME_START();
+#endif
 		result = homa_message_out_fill(rpc, &msg->msg_iter, 1);
+#ifdef CONFIG_SMT
 		SMT_TIME_END(homa_message_out_fill, __t3);
+#endif
 		if (result && rpc->state != RPC_DEAD)
 			goto error;
 		homa_rpc_put(rpc);
@@ -1728,9 +1740,13 @@ int homa_softirq(struct sk_buff *skb)
 				 h->type);
 			*prev_link = skb->next;
 			skb->next = NULL;
+#ifdef CONFIG_SMT
 			u64 __td = SMT_TIME_START();
+#endif
 			homa_dispatch_pkts(skb);
+#ifdef CONFIG_SMT
 			SMT_TIME_END(homa_dispatch_pkts, __td);
+#endif
 		} else {
 			prev_link = &skb->next;
 		}
@@ -1781,9 +1797,13 @@ discard:
 			UNIT_LOG("", " %d", ntohl(h3->seg.offset));
 		}
 #endif /* __UNIT_TEST__ */
+#ifdef CONFIG_SMT
 		u64 __td2 = SMT_TIME_START();
+#endif
 		homa_dispatch_pkts(packets);
+#ifdef CONFIG_SMT
 		SMT_TIME_END(homa_dispatch_pkts, __td2);
+#endif
 		packets = other_pkts;
 	}
 

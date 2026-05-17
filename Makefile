@@ -52,8 +52,12 @@ LINUX_SRC_DIR ?= ../net-next
 ifneq ($(KERNELRELEASE),)
 
 obj-m += homa.o
+ifeq ($(NO_CONFIG_SMT),)
 homa-y = $(HOMA_OBJS) $(SMT_OBJS)
 override SMT_CFLAGS += -DCONFIG_SMT
+else
+homa-y = $(HOMA_OBJS)
+endif
 
 MY_CFLAGS += -g
 ccflags-y += $(MY_CFLAGS) $(SMT_CFLAGS)
