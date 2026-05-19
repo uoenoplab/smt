@@ -46,7 +46,7 @@ run_sweep() {
     ssh n08 "pkill -x simple_server 2>/dev/null; true"
     printf '%s\n' "$out" >&2
 
-    json=$(sed -n '/--- RESULT ---/,/--- RESULT ---/{/--- RESULT ---/d; p}' <<<"$out" | sed 's/-\?nan/null/g')
+    json=$(awk '/--- RESULT ---/{f=!f; next} f' <<<"$out" | sed 's/-\{0,1\}nan/null/g')
     jq -r --arg mode "$mode" --arg size "$size" '
       [$mode, $size, .total_rpcs, .kops_per_second,
        .tx_throughput_mbps, .rx_throughput_mbps,

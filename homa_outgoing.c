@@ -1092,6 +1092,32 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 		if (start >= (offset + homa_info->data_bytes))
 			continue;
 
+#ifdef CONFIG_SMT_HW
+		/* HW path: frags hold plaintext (NIC encrypts on the wire),
+		 * so the SW-style slice-and-rewrap can't be used — it would
+		 * copy plaintext bytes into a new skb and leak them. Just
+		 * resend the entire original skb; its cb carrier and the RPC's
+		 * TIS still cover it, and mlx5 ktls' resync path handles the
+		 * seq mismatch on retransmit.
+		 *
+		 * TODO: refine to send only the requested [start, end] slice
+		 * by re-encrypting through HW. Wasteful for large GSO skbs but
+		 * correct.
+		 */
+		if (is_smt_rpc(rpc)) {
+			skb_get(skb);
+			smt_hw_attach_skb(rpc, skb);
+#ifndef __STRIP__
+			homa_pacer_check_nic_q(rpc->hsk->homa->pacer, skb, true);
+			__homa_xmit_data(skb, rpc, priority);
+#else
+			__homa_xmit_data(skb, rpc);
+#endif
+			INC_METRIC(resent_packets, 1);
+			continue;
+		}
+#endif
+
 		offset = homa_info->offset;
 		seg_offset = sizeof(struct homa_data_hdr);
 		data_left = homa_info->data_bytes;

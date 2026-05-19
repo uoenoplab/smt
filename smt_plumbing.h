@@ -64,6 +64,12 @@ static inline bool is_smt_rpc(struct homa_rpc *rpc) {
  * the patched mlx5 TX hook reads priv_tx from this cb slot.
  */
 extern void smt_hw_attach_skb(struct homa_rpc *rpc, struct sk_buff *skb);
+
+/* Return the RPC's TIS slot to its per-CPU pool now that all data has
+ * been handed to the IP stack. Eager release — late-firing destructors
+ * from in-flight skbs are harmless.
+ */
+extern void smt_device_release_tis(struct homa_rpc *rpc);
 #else
 static inline void smt_hw_attach_skb(struct homa_rpc *rpc, struct sk_buff *skb)
 {

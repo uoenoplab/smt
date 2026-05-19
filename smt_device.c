@@ -20,6 +20,7 @@
 #ifdef CONFIG_SMT_HW
 
 #include <linux/atomic.h>
+#include <linux/bits.h>
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/slab.h>
@@ -73,15 +74,34 @@ static int smt_device_create_driver_state(struct homa_rpc *rpc, void **driver_st
 	return rc;
 }
 
+/* Pool-side bookkeeping: a TIS slot is "free" when its bit is set in
+ * pool->free AND its inflight counter has reached 0. Acquire flips the
+ * bit to 0 atomically; release sets it back once inflight is 0.
+ */
+static int smt_hw_acquire_slot(struct smt_hw_per_cpu_pool *pool)
+{
+	int i;
+
+	for (i = 0; i < SMT_TIS_PER_CPU; i++) {
+		if (test_and_clear_bit(i, &pool->free))
+			return i;
+	}
+	return -EAGAIN;
+}
+
+static void smt_hw_return_slot(struct smt_hw_per_cpu_pool *pool, int slot_idx)
+{
+	set_bit(slot_idx, &pool->free);
+}
+
 int smt_device_set_crypto_tx(struct homa_rpc *rpc)
 {
 	struct smt_context *ctx = SMT_RPC(rpc)->ctx;
 	struct smt_hw_context_tx *offload_ctx;
 	struct smt_rpc_hw_context_tx *ctx_rpc_tx = smt_rpc_hw_tx(rpc);
-	const int threshold = rpc->hsk->homa->smt_hardware_state_threshold;
-	int num_rpcs, num_driver_states;
-	int driver_state_idx = -1;
-	int rc = 0;
+	struct smt_hw_per_cpu_pool *pool;
+	struct smt_tis_slot *slot;
+	int cpu, slot_idx, rc;
 
 	if (unlikely(!ctx || !ctx->offload_tx)) {
 		smt_pr_err("%s: rpc %lld has tx_conf==SMT_HW but offload_tx is NULL (cloned ctx without HW alloc?)\n",
@@ -89,59 +109,76 @@ int smt_device_set_crypto_tx(struct homa_rpc *rpc)
 		return -EINVAL;
 	}
 	offload_ctx = (struct smt_hw_context_tx *)ctx->offload_tx;
-	if (!offload_ctx->netdev)
+	if (!offload_ctx->netdev || !offload_ctx->pools)
 		return -EINVAL;
 
-	if (!offload_ctx->start_queue_id)
-		offload_ctx->start_queue_id =
-			raw_smp_processor_id() % offload_ctx->num_tx_queues;
+	cpu = raw_smp_processor_id();
+	if (cpu >= offload_ctx->nr_cpus)
+		cpu = cpu % offload_ctx->nr_cpus;  /* defensive */
+	pool = &offload_ctx->pools[cpu];
 
-	do {
-		num_rpcs = atomic_read(&offload_ctx->num_current_rpcs);
-	} while (atomic_cmpxchg(&offload_ctx->num_current_rpcs, num_rpcs,
-				num_rpcs + 1) != num_rpcs);
-	num_rpcs = num_rpcs + 1;
+	slot_idx = smt_hw_acquire_slot(pool);
+	if (slot_idx < 0) {
+		pr_warn_ratelimited("%s: pool exhausted on cpu %d (SMT_TIS_PER_CPU=%d)\n",
+				    __func__, cpu, SMT_TIS_PER_CPU);
+		return -EAGAIN;
+	}
+	slot = &pool->slots[slot_idx];
 
-	num_driver_states = atomic_read(&offload_ctx->num_driver_states);
-
-	/* Threshold-based growth: allocate a new driver_state (one per TX queue
-	 * up to num_tx_queues) whenever the live RPC count exceeds the current
-	 * pool capacity. Each driver_state pins to a distinct NIC TLS context
-	 * and TX queue, so concurrent RPCs do not share NIC encrypt state and
-	 * cannot race on resync descriptors (paper §3.2).
+	/* Lazy create TIS on first use of this slot. Subsequent acquires
+	 * of the same slot reuse the existing priv_tx — the NIC TLS
+	 * context persists across RPCs sharing the slot.
 	 */
-	while (unlikely(num_rpcs > num_driver_states * threshold &&
-			num_driver_states < offload_ctx->num_tx_queues)) {
-		if (atomic_cmpxchg(&offload_ctx->num_driver_states,
-				   num_driver_states,
-				   num_driver_states + 1) == num_driver_states) {
-			rc = smt_device_create_driver_state(rpc,
-				&offload_ctx->driver_states[num_driver_states]);
-			if (unlikely(rc))
+	if (!READ_ONCE(slot->priv_tx)) {
+		mutex_lock(&pool->create_lock);
+		if (!slot->priv_tx) {
+			rc = smt_device_create_driver_state(rpc, &slot->priv_tx);
+			if (rc) {
+				mutex_unlock(&pool->create_lock);
+				smt_hw_return_slot(pool, slot_idx);
 				return rc;
-			num_driver_states++;
-			driver_state_idx = num_driver_states - 1;
-			break;
+			}
 		}
-		num_driver_states = atomic_read(&offload_ctx->num_driver_states);
+		mutex_unlock(&pool->create_lock);
 	}
 
-	while (true) {
-		if (likely(driver_state_idx == -1))
-			driver_state_idx =
-				(atomic_read(&offload_ctx->last_driver_state_used) + 1)
-				% num_driver_states;
-		if (offload_ctx->driver_states[driver_state_idx] != NULL)
-			break;
-		driver_state_idx = (driver_state_idx + 1) % num_driver_states;
-	}
+	ctx_rpc_tx->driver_state = slot->priv_tx;
+	ctx_rpc_tx->home_cpu = (short)cpu;
+	ctx_rpc_tx->slot_idx = (short)slot_idx;
+	ctx_rpc_tx->queue_idx = (short)(cpu % offload_ctx->num_tx_queues);
 
-	atomic_set(&offload_ctx->last_driver_state_used, driver_state_idx);
-	ctx_rpc_tx->driver_state = offload_ctx->driver_states[driver_state_idx];
-	ctx_rpc_tx->queue_idx = (driver_state_idx + offload_ctx->start_queue_id)
-		% offload_ctx->num_tx_queues;
+	return 0;
+}
 
-	return rc;
+void smt_device_release_tis(struct homa_rpc *rpc)
+{
+	struct smt_context *ctx = SMT_RPC(rpc)->ctx;
+	struct smt_hw_context_tx *offload_ctx;
+	struct smt_rpc_hw_context_tx *ctx_rpc_tx = smt_rpc_hw_tx(rpc);
+	struct smt_hw_per_cpu_pool *pool;
+	struct smt_tis_slot *slot;
+
+	if (!ctx || !ctx->offload_tx)
+		return;
+	if (!READ_ONCE(ctx_rpc_tx->driver_state))
+		return;  /* already released (idempotent) */
+
+	offload_ctx = (struct smt_hw_context_tx *)ctx->offload_tx;
+	pool = &offload_ctx->pools[ctx_rpc_tx->home_cpu];
+	slot = &pool->slots[ctx_rpc_tx->slot_idx];
+
+	WRITE_ONCE(ctx_rpc_tx->driver_state, NULL);
+	/* Return slot eagerly without waiting for in-flight skbs. A new
+	 * owner acquiring this slot will use the same priv_tx; mlx5 ktls'
+	 * resync path handles the rec_seq mismatch when the new owner's
+	 * first record hits handle_tx_skb (one resync WQE per RPC handoff
+	 * instead of per-skb under the old shared-pool design).
+	 *
+	 * Late-firing destructors from the previous owner's skbs are
+	 * harmless: the callback now does nothing — slot reuse is gated
+	 * solely by the free bitmap.
+	 */
+	smt_hw_return_slot(pool, ctx_rpc_tx->slot_idx);
 }
 
 int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
@@ -157,9 +194,15 @@ int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
 		return -EINVAL;
 	}
 	if (unlikely(!ctx_rpc_tx->driver_state)) {
-		smt_pr_err("%s: rpc %lld driver_state not set; smt_device_set_crypto_tx must run first\n",
-			   __func__, rpc->id);
-		return -EINVAL;
+		/* Slot was released early (directive 2) and now a retransmit
+		 * or late-burst encrypt needs to send again. Reacquire from
+		 * the current CPU's pool. If exhausted, the caller's error
+		 * handling will fall back to SW for this skb.
+		 */
+		int rc_acq = smt_device_set_crypto_tx(rpc);
+
+		if (rc_acq)
+			return rc_acq;
 	}
 
 	/* data_len = bytes between (smt_h + PRE) and smt_t. For HW offload
@@ -283,18 +326,25 @@ int smt_hw_set_offload_tx(struct homa_sock *hsk, struct smt_context *ctx)
 
 	offload_ctx->netdev = netdev;
 	offload_ctx->num_tx_queues = netdev->real_num_tx_queues;
+	offload_ctx->nr_cpus = num_possible_cpus();
 
-	offload_ctx->driver_states =
-		kzalloc(sizeof(void *) * offload_ctx->num_tx_queues,
-			GFP_ATOMIC);
-	if (!offload_ctx->driver_states) {
+	offload_ctx->pools =
+		kcalloc(offload_ctx->nr_cpus,
+			sizeof(struct smt_hw_per_cpu_pool), GFP_ATOMIC);
+	if (!offload_ctx->pools) {
 		rc = -ENOMEM;
 		goto free_offload_ctx;
 	}
+	for (int i = 0; i < offload_ctx->nr_cpus; i++) {
+		struct smt_hw_per_cpu_pool *p = &offload_ctx->pools[i];
 
-	atomic_set(&offload_ctx->num_current_rpcs, 0);
-	atomic_set(&offload_ctx->num_driver_states, 0);
-	atomic_set(&offload_ctx->last_driver_state_used, 0);
+		/* "1UL << 64" is UB; build the all-ones mask for the
+		 * SMT_TIS_PER_CPU low bits via GENMASK_ULL which handles
+		 * the 64-bit edge case correctly.
+		 */
+		p->free = GENMASK_ULL(SMT_TIS_PER_CPU - 1, 0);
+		mutex_init(&p->create_lock);
+	}
 
 	ctx->offload_tx = offload_ctx;
 	ctx->tx_conf = SMT_HW;
@@ -341,42 +391,36 @@ void smt_device_release_resources_tx(struct smt_context *ctx)
 
 	netdev = hw_ctx_tx->netdev;
 	if (netdev && netdev->tlsdev_ops &&
-	    netdev->tlsdev_ops->tls_dev_del) {
-		for (int i = 0; i < hw_ctx_tx->num_tx_queues; i++) {
-			if (!hw_ctx_tx->driver_states[i])
-				continue;
-			netdev->tlsdev_ops->tls_dev_del(
-				netdev,
-				(struct tls_context *)hw_ctx_tx->driver_states[i],
-				(enum tls_offload_ctx_dir)
-					SMT_OFFLOAD_CTX_DIR_TX);
-			hw_ctx_tx->driver_states[i] = NULL;
+	    netdev->tlsdev_ops->tls_dev_del && hw_ctx_tx->pools) {
+		for (int cpu = 0; cpu < hw_ctx_tx->nr_cpus; cpu++) {
+			for (int j = 0; j < SMT_TIS_PER_CPU; j++) {
+				void *priv_tx = hw_ctx_tx->pools[cpu].slots[j].priv_tx;
+
+				if (!priv_tx)
+					continue;
+				netdev->tlsdev_ops->tls_dev_del(
+					netdev,
+					(struct tls_context *)priv_tx,
+					(enum tls_offload_ctx_dir)
+						SMT_OFFLOAD_CTX_DIR_TX);
+				hw_ctx_tx->pools[cpu].slots[j].priv_tx = NULL;
+			}
 		}
 	}
 
-	kfree(hw_ctx_tx->driver_states);
+	kfree(hw_ctx_tx->pools);
 	kfree(hw_ctx_tx);
 	ctx->offload_tx = NULL;
 }
 
 void smt_device_release_rpc_tx(struct homa_rpc *rpc)
 {
-	struct smt_context *ctx = SMT_RPC(rpc)->ctx;
-	struct smt_hw_context_tx *offload_ctx;
-	int num;
-
-	if (!ctx)
-		return;
-	offload_ctx = (struct smt_hw_context_tx *)ctx->offload_tx;
-	if (!offload_ctx)
-		return;
-
-	do {
-		num = atomic_read(&offload_ctx->num_current_rpcs);
-		if (num <= 0)
-			break;
-	} while (atomic_cmpxchg(&offload_ctx->num_current_rpcs, num,
-				num - 1) != num);
+	/* RPC tear-down: ensure the TIS slot is back in the pool. The
+	 * caller may not have invoked smt_device_release_tis (e.g. error
+	 * paths or RPCs that finish abnormally), so call it here as a
+	 * safety net. Idempotent if already released.
+	 */
+	smt_device_release_tis(rpc);
 }
 
 #endif /* CONFIG_SMT_HW */

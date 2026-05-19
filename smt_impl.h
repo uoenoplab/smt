@@ -131,19 +131,46 @@ struct smt_rpc_sw_context {
 };
 
 #ifdef CONFIG_SMT_HW
+/* One TIS slot in a per-CPU pool. priv_tx is created lazily on first
+ * acquire and persists for the slot's lifetime (the slot is reused, the
+ * TIS struct isn't recreated). inflight counts skbs that still
+ * reference this TIS via the mlx5 hash table; drained signals the
+ * owning RPC has done early-release and the slot returns to the free
+ * pool once inflight hits zero.
+ */
+struct smt_tis_slot {
+	void *priv_tx;            /* NULL until lazy tls_dev_add */
+};
+
+/* SMT_TIS_PER_CPU per-CPU pool capacity. 64 covers loaded multi-flow
+ * worker threads pushing all per-socket inflight RPCs concurrently
+ * (-n N -s S → up to N RPCs in-flight per thread before any complete).
+ * Total budget = NR_CPUS * 64 (e.g. 64*64=4096), still well under NIC
+ * log_max_tis (~16K) on ConnectX-5/6. Bitmap fits in unsigned long.
+ */
+#define SMT_TIS_PER_CPU 64
+
+struct smt_hw_per_cpu_pool {
+	struct smt_tis_slot slots[SMT_TIS_PER_CPU];
+	/* free[bit_i]=1 means slots[i] is available to acquire. Updated via
+	 * atomic test_and_clear_bit / set_bit; no spinlock on the hot path.
+	 */
+	unsigned long free;       /* bitmap, SMT_TIS_PER_CPU <= BITS_PER_LONG */
+	struct mutex create_lock; /* serializes lazy tls_dev_add per slot */
+} ____cacheline_aligned;
+
 struct smt_hw_context_tx {
 	int num_tx_queues;
-	int start_queue_id;
 	struct net_device *netdev;
-	atomic_t num_current_rpcs;
-	atomic_t num_driver_states;
-	atomic_t last_driver_state_used; /* round robin */
-	void **driver_states;
+	int nr_cpus;              /* num_possible_cpus, also size of pools[] */
+	struct smt_hw_per_cpu_pool *pools;
 };
 
 struct smt_rpc_hw_context_tx {
-	void *driver_state;
-	int queue_idx;
+	void *driver_state;       /* NULL after early release */
+	short home_cpu;           /* which pool slot lives in */
+	short slot_idx;           /* index within pool->slots */
+	short queue_idx;          /* home_cpu % num_tx_queues */
 	u8 rec_seq[TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE];
 };
 
@@ -230,6 +257,13 @@ int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
 
 void smt_device_release_rpc_tx(struct homa_rpc *rpc);
 void smt_device_release_resources_tx(struct smt_context *ctx);
+
+/* Early release: caller (homa_outgoing) signals the RPC has finished
+ * passing data to the IP stack. The TIS slot is marked drained and
+ * returns to the pool once outstanding skbs finish (refcount drop in
+ * the skb destructor callback). Safe to call multiple times.
+ */
+void smt_device_release_tis(struct homa_rpc *rpc);
 #endif /* CONFIG_SMT_HW */
 
 /* smt_incoming.c */
