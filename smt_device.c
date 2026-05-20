@@ -155,30 +155,25 @@ void smt_device_release_tis(struct homa_rpc *rpc)
 	struct smt_context *ctx = SMT_RPC(rpc)->ctx;
 	struct smt_hw_context_tx *offload_ctx;
 	struct smt_rpc_hw_context_tx *ctx_rpc_tx = smt_rpc_hw_tx(rpc);
-	struct smt_hw_per_cpu_pool *pool;
-	struct smt_tis_slot *slot;
 
 	if (!ctx || !ctx->offload_tx)
 		return;
-	if (!READ_ONCE(ctx_rpc_tx->driver_state))
+	if (ctx_rpc_tx->slot_idx < 0)
 		return;  /* already released (idempotent) */
 
 	offload_ctx = (struct smt_hw_context_tx *)ctx->offload_tx;
-	pool = &offload_ctx->pools[ctx_rpc_tx->home_cpu];
-	slot = &pool->slots[ctx_rpc_tx->slot_idx];
 
-	WRITE_ONCE(ctx_rpc_tx->driver_state, NULL);
-	/* Return slot eagerly without waiting for in-flight skbs. A new
-	 * owner acquiring this slot will use the same priv_tx; mlx5 ktls'
-	 * resync path handles the rec_seq mismatch when the new owner's
-	 * first record hits handle_tx_skb (one resync WQE per RPC handoff
-	 * instead of per-skb under the old shared-pool design).
-	 *
-	 * Late-firing destructors from the previous owner's skbs are
-	 * harmless: the callback now does nothing — slot reuse is gated
-	 * solely by the free bitmap.
+	/* Return slot to its CPU's free pool, but KEEP driver_state set
+	 * so a later peer-triggered RESEND can still re-attach to mlx5
+	 * with this priv_tx. The TIS struct lives in the pool slot and
+	 * persists across slot reuse (lazy-created once per slot for the
+	 * socket's lifetime). If another RPC has claimed the slot in the
+	 * meantime, mlx5 ktls' resync path handles the expected_seq
+	 * mismatch at handle_tx_skb — both streams progress correctly.
 	 */
-	smt_hw_return_slot(pool, ctx_rpc_tx->slot_idx);
+	smt_hw_return_slot(&offload_ctx->pools[ctx_rpc_tx->home_cpu],
+			   ctx_rpc_tx->slot_idx);
+	ctx_rpc_tx->slot_idx = -1;
 }
 
 int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
@@ -194,15 +189,9 @@ int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
 		return -EINVAL;
 	}
 	if (unlikely(!ctx_rpc_tx->driver_state)) {
-		/* Slot was released early (directive 2) and now a retransmit
-		 * or late-burst encrypt needs to send again. Reacquire from
-		 * the current CPU's pool. If exhausted, the caller's error
-		 * handling will fall back to SW for this skb.
-		 */
-		int rc_acq = smt_device_set_crypto_tx(rpc);
-
-		if (rc_acq)
-			return rc_acq;
+		smt_pr_err("%s: rpc %lld driver_state NULL — release_tis must keep the pointer\n",
+			   __func__, rpc->id);
+		return -EINVAL;
 	}
 
 	/* data_len = bytes between (smt_h + PRE) and smt_t. For HW offload
@@ -233,12 +222,10 @@ int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
 	smt_h[2] = 0x03;
 	smt_h[3] = (buf_len - TLS_HEADER_SIZE) >> 8;
 	smt_h[4] = (buf_len - TLS_HEADER_SIZE) & 0xff;
+
 	for (int i = 0; i < TLS_CIPHER_AES_GCM_128_IV_SIZE; i++)
 		smt_h[TLS_HEADER_SIZE + i] = ctx_rpc_tx->rec_seq[i];
 
-	/* Patched mlx5 needs skb->sk set so its ndo_select_queue can spot
-	 * the IPPROTO_HOMA socket and check the homa hdr type byte.
-	 */
 	skb->sk = &rpc->hsk->sock;
 	skb_set_queue_mapping(skb, (u16)ctx_rpc_tx->queue_idx);
 
@@ -251,7 +238,11 @@ int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
 	*((void **)(skb->cb + sizeof(skb->cb) - sizeof(void *))) =
 		ctx_rpc_tx->driver_state;
 
-	/* Advance our shadow rec_seq for the next record on this RPC. */
+	/* Advance our shadow rec_seq for the next record on this RPC. An HW
+	 * resend never re-runs this path: it pskb_copy's the original skb
+	 * (whose linear already carries smt_h with the original nonce) and
+	 * only re-stamps the cb, so the on-wire nonce matches the first send.
+	 */
 	smt_bigint_increment(ctx_rpc_tx->rec_seq,
 			     TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);
 
@@ -262,8 +253,9 @@ int smt_device_encrypt(struct homa_rpc *rpc, u8 *smt_h, u8 *smt_t,
  *
  * smt_device_encrypt() writes priv_tx into the tail of skb->cb, but IP /
  * qdisc / Grant-driven softirq layers can overwrite skb->cb between encrypt
- * and the actual NIC TX. This re-applies (priv_tx, queue) so a deferred
- * Grant send reaches the NIC with intact crypto state.
+ * and the actual NIC TX. This re-applies (priv_tx, queue) from the per-RPC
+ * ctx — driver_state is held for the RPC's lifetime (release_tis keeps it),
+ * so deferred Grant sends and resends reach the NIC with intact crypto state.
  */
 void smt_hw_attach_skb(struct homa_rpc *rpc, struct sk_buff *skb)
 {
@@ -372,6 +364,7 @@ int smt_hw_init_rpc(struct homa_rpc *rpc)
 		     sizeof(((struct smt_rpc *)0)->smt_rpc_crypto_tx));
 
 	memset(r, 0, sizeof(*r));
+	r->slot_idx = -1;  /* sentinel: no pool slot yet */
 	memcpy(r->rec_seq, ctx->aes_gcm_128_send.rec_seq,
 	       TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);
 

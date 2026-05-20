@@ -22,8 +22,12 @@
 #include "smt_plumbing.h"
 #endif
 
-#ifdef CONFIG_SMT_MOCK_RESEND
+#if defined(CONFIG_SMT_MOCK_RESEND) || defined(CONFIG_SMT_HW)
 #include "smt_impl.h"
+#endif
+
+#ifdef CONFIG_SMT_HW
+#include <net/tls.h>  /* TLS_HEADER_SIZE */
 #endif
 
 /**
@@ -329,9 +333,6 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 
 	homa_info = homa_get_skb_info(skb);
 	homa_info->next_skb = NULL;
-#ifdef CONFIG_SMT_HW
-	homa_info->smt_state_set = false;
-#endif
 	homa_info->wire_bytes = length + segs * (sizeof(struct homa_data_hdr)
 			+ hsk->ip_header_length + HOMA_ETH_OVERHEAD);
 #ifdef CONFIG_SMT
@@ -1092,27 +1093,71 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 		if (start >= (offset + homa_info->data_bytes))
 			continue;
 
-#ifdef CONFIG_SMT_HW
-		/* HW path: frags hold plaintext (NIC encrypts on the wire),
-		 * so the SW-style slice-and-rewrap can't be used — it would
-		 * copy plaintext bytes into a new skb and leak them. Just
-		 * resend the entire original skb; its cb carrier and the RPC's
-		 * TIS still cover it, and mlx5 ktls' resync path handles the
-		 * seq mismatch on retransmit.
-		 *
-		 * TODO: refine to send only the requested [start, end] slice
-		 * by re-encrypting through HW. Wasteful for large GSO skbs but
-		 * correct.
+#if defined(CONFIG_SMT_HW) && !defined(__STRIP__)
+		/* HW resend: pskb_copy() makes a fresh sk_buff with a
+		 * deep-copied linear and refcount-shared frags. The frags
+		 * still hold plaintext (NIC never wrote back on first TX), and
+		 * the deep-copied linear still carries smt_h with the ORIGINAL
+		 * record nonce. So we only re-stamp the cb (priv_tx) and let the
+		 * NIC re-encrypt the same record on the wire — the receiver sees
+		 * a byte-identical duplicate and dedups it. No re-encryption and
+		 * no per-skb nonce bookkeeping are needed.
 		 */
-		if (is_smt_rpc(rpc)) {
-			skb_get(skb);
-			smt_hw_attach_skb(rpc, skb);
-#ifndef __STRIP__
-			homa_pacer_check_nic_q(rpc->hsk->homa->pacer, skb, true);
-			__homa_xmit_data(skb, rpc, priority);
-#else
-			__homa_xmit_data(skb, rpc);
-#endif
+		if (is_smt_rpc(rpc) &&
+		    SMT_RPC(rpc)->ctx->tx_conf == SMT_HW) {
+			struct sk_buff *new_skb = pskb_copy(skb, GFP_ATOMIC);
+			struct homa_data_hdr *h;
+
+			if (!new_skb)
+				continue;
+
+			/* The original skb in msgout.packets has had its IP
+			 * (and link-layer) header pushed into linear during
+			 * the first ip_queue_xmit. pskb_copy preserves that
+			 * state — but calling ip_queue_xmit on the copy would
+			 * push *another* IP header on top, corrupting the
+			 * wire packet (and IP fragments the result, which is
+			 * what triggers ICMP_FRAG_NEEDED → blanket RPC abort).
+			 *
+			 * Reset data to the transport header so IP push lands
+			 * in fresh headroom.
+			 */
+			if (skb_transport_offset(new_skb) > 0)
+				skb_pull(new_skb,
+					 skb_transport_offset(new_skb));
+
+			/* pskb_copy doesn't propagate GSO state in skb_shinfo;
+			 * without this, IP would try (and fail) to fragment a
+			 * >MTU skb → ICMP_FRAG_NEEDED.
+			 */
+			skb_shinfo(new_skb)->gso_segs =
+				skb_shinfo(skb)->gso_segs;
+			skb_shinfo(new_skb)->gso_size =
+				skb_shinfo(skb)->gso_size;
+			skb_shinfo(new_skb)->gso_type =
+				skb_shinfo(skb)->gso_type;
+
+			h = (struct homa_data_hdr *)new_skb->data;
+			/* Mark as retransmit (for metric/print) but leave the
+			 * HAS_EXTRA_IP_ID bit clear: this is a multi-seg super-skb
+			 * and NIC TLS-GSO stamps unique IP header ids per wire
+			 * packet, which is what the receiver should use. The
+			 * extra_ip_id stash is only meaningful for the SW per-
+			 * segment resend path below.
+			 */
+			h->retransmit = HOMA_RETRANSMIT_FLAG;
+
+			tt_record3("retransmitting offset %d, length %d, id %d",
+				   homa_info->offset,
+				   homa_info->data_bytes, rpc->id);
+			homa_pacer_check_nic_q(rpc->hsk->homa->pacer,
+					       new_skb, true);
+			/* Re-stamp the cb priv_tx so the patched mlx5 TX hook
+			 * encrypts the (shared, plaintext) frags on the wire,
+			 * using the original nonce already in the copy's smt_h.
+			 */
+			smt_hw_attach_skb(rpc, new_skb);
+			__homa_xmit_data(new_skb, rpc, priority);
 			INC_METRIC(resent_packets, 1);
 			continue;
 		}
@@ -1222,14 +1267,20 @@ void homa_resend_data(struct homa_rpc *rpc, int start, int end)
 			if (!is_smt_rpc(rpc))
 #endif
 			h->seg.offset = htonl(offset);
-			h->retransmit = 1;
+			h->retransmit = HOMA_RETRANSMIT_FLAG;
 			IF_NO_STRIP(h->incoming = htonl(end));
 #ifdef CONFIG_SMT
 			if (is_smt_rpc(rpc)) {
 				bool smt_trailer_only = smt_multi_seg &&
 					seg_length <= smt_pad.trl_len;
 
-				h->retransmit |= (extra_ip_id & 0x0f) << 4;
+				/* Single-segment skb: kernel-assigned IP id is
+				 * not a segment index, so stash the real ip_id
+				 * in the high 4 bits and tell the receiver to
+				 * use that instead of the IP header.
+				 */
+				h->retransmit |= SMT_RETRANSMIT_HAS_EXTRA_IP_ID |
+					((extra_ip_id & 0x0f) << 4);
 				err = homa_skb_append_from_skb(rpc->hsk->homa,
 					new_skb, skb,
 					seg_offset -

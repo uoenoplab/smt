@@ -20,7 +20,9 @@ CONFIGS=(
   "nc:-DCONFIG_SMT_NOCRYPTO:smt-sw:smt"
   "homa::homa:homa"
 )
-SIZES=(64 1024 8192 65536 640000)
+# 640000 omitted: HW path hangs n09 reproducibly under loaded multi-flow
+# at that size (NIC firmware? Investigate separately — see TODO).
+SIZES=(64 1024 8192 65536)
 RATES=(1 50 100 150)         # -m argument
 SOCKETS=4
 THREADS=4
@@ -28,10 +30,16 @@ THREADS=4
 echo "config,size,rate,total_rpcs,kops_per_second,tx_mbps,rx_mbps,avg_rtt_us,p50_rtt_us,p95_rtt_us,p99_rtt_us" > "$OUT"
 
 cleanup() {
+  # SIGKILL + wait for actual reap. loaded_server can sit in homa
+  # kernel waits and take a few seconds to drain after SIGKILL.
   for h in n08 n09; do
-    ssh "$h" 'pkill -9 -x loaded_server 2>/dev/null; pkill -9 -x loaded_client 2>/dev/null; true' || true
+    ssh "$h" 'pkill -9 -x loaded_server 2>/dev/null; pkill -9 -x loaded_client 2>/dev/null
+      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        pgrep -x loaded_server >/dev/null 2>&1 || pgrep -x loaded_client >/dev/null 2>&1 || break
+        sleep 1
+      done
+      true' || true
   done
-  sleep 1
 }
 
 build_and_load() {

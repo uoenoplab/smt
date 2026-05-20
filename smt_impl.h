@@ -277,7 +277,7 @@ static inline u16 smt_logical_ip_id(struct sk_buff *skb)
 {
 	struct homa_data_hdr *h = (struct homa_data_hdr *)skb->data;
 
-	if (h->retransmit & 0x01)
+	if (h->retransmit & SMT_RETRANSMIT_HAS_EXTRA_IP_ID)
 		return smt_extra_ip_id(h);
 
 	return ntohs(ip_hdr(skb)->id);

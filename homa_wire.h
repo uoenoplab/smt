@@ -344,10 +344,17 @@ struct homa_data_hdr {
 #endif /* See strip.py */
 
 	/**
-	 * @retransmit: 1 means this packet was sent in response to a RESEND
-	 * (it has already been sent previously).
+	 * @retransmit: bit 0 (HOMA_RETRANSMIT_FLAG) set means this packet was
+	 * sent in response to a RESEND. For SMT, bit 1
+	 * (SMT_RETRANSMIT_HAS_EXTRA_IP_ID) tells the receiver that bits 4..7
+	 * carry an explicit per-segment ip_id (used by the SW per-segment
+	 * resend path, where the kernel-assigned IP header id is not a
+	 * segment index). HW resend leaves bit 1 clear so the receiver uses
+	 * the NIC TSO-stamped IP header id.
 	 */
 	u8 retransmit;
+#define HOMA_RETRANSMIT_FLAG            0x01
+#define SMT_RETRANSMIT_HAS_EXTRA_IP_ID  0x02
 
 	char pad[3];
 
