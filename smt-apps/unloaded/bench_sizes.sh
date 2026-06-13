@@ -8,7 +8,7 @@ DUR=${1:-8}
 CSV=${2:-bench_results.csv}
 SIZES=(64 128 256 512 1024 2048 4096 8192 16384 32768 65536 100000 320000 500000 640000)
 
-declare -A PROTO=([tcp]=tcp [ktls-sw]=tcp_ktls [homa]=homa [smt-sw]=smt [smt-nocrypto]=smt [smt-hw]=smt)
+declare -A PROTO=([tcp]=tcp [ktls-sw]=tcp_ktls [ktls-hw]=tcp_ktls [homa]=homa [smt-sw]=smt [smt-nocrypto]=smt [smt-hw]=smt)
 
 # Map a (sweep) mode to the config_unloaded -m argument. The nocrypto
 # build short-circuits both SW and HW encrypt paths in homa_outgoing.c,
@@ -17,6 +17,7 @@ config_mode_for() {
   case "$1" in
     smt-sw|smt-nocrypto)  echo "smt-sw" ;;
     smt-hw)               echo "smt-hw" ;;
+    ktls-hw)              echo "ktls-hw" ;;
     *)                    echo "$1" ;;
   esac
 }

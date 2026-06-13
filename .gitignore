@@ -36,3 +36,12 @@ Module.symvers
 modules.order
 
 .vscode/
+.claude/
+
+# bench artifacts (regenerated per run)
+smt-apps/loaded/bench_results.csv
+smt-apps/unloaded/bench_results.csv
+
+# trace bundle: pcaps and handoff tarball are large binaries kept out of git
+smt-apps/trace/*.pcap
+smt-apps/trace/smt_traces_for_gao.tar.gz

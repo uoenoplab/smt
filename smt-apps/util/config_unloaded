@@ -23,7 +23,7 @@ usage() {
 Usage: sudo ./config_unloaded [-i IFNAME] [-a IPADDR] [-m MODE]
   -i IFNAME  NIC interface name (e.g., ens1f1np1). Will prompt if unset.
   -a IPADDR  IP address (CIDR) to assign to IFNAME (e.g., 10.0.0.1/24). Will prompt if unset.
-  -m MODE    One of: tcp, ktls-sw, homa, smt-sw, smt-hw. Will prompt if unset.
+  -m MODE    One of: tcp, ktls-sw, ktls-hw, homa, smt-sw, smt-hw. Will prompt if unset.
   -h         Show this help and exit.
 EOF
   exit "${1:-1}"
@@ -54,10 +54,10 @@ if [[ -z "$IFNAME" ]]; then
 fi
 
 if [[ -z "$MODE" ]]; then
-  read -rp "Enter mode (tcp|ktls-sw|homa|smt-sw|smt-hw): " MODE
+  read -rp "Enter mode (tcp|ktls-sw|ktls-hw|homa|smt-sw|smt-hw): " MODE
 fi
 case "$MODE" in
-  tcp|ktls-sw|homa|smt-sw|smt-hw) ;;
+  tcp|ktls-sw|ktls-hw|homa|smt-sw|smt-hw) ;;
   *) echo "[!] Invalid mode: $MODE" >&2; usage ;;
 esac
 
@@ -106,7 +106,7 @@ echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo || echo 1 > /sys/devices/
 echo "[+] Setting NIC coalesce on ${IFNAME}"
 ethtool -C "$IFNAME" adaptive-rx off rx-usecs 0 rx-frames 1
 
-if [[ "$MODE" == "smt-hw" ]]; then
+if [[ "$MODE" == "smt-hw" || "$MODE" == "ktls-hw" ]]; then
   echo "[+] Enabling NIC TLS TX offload on ${IFNAME}"
   ethtool -K "$IFNAME" tls-hw-tx-offload on || {
     echo "[!] tls-hw-tx-offload could not be enabled — patched mlx5_core required" >&2
@@ -138,7 +138,7 @@ fi
 echo "[+] Setting IRQ affinity policy (onecore) on ${IFNAME} (pin all NIC IRQs to core 0)"
 "${script_dir}/config_queues" -i "$IFNAME" -m onecore
 
-if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" ]]; then
+if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" || "$MODE" == "ktls-hw" ]]; then
   echo "[+] Disable RPS on ${IFNAME}"
   "${script_dir}/config_rps" no_rps "$IFNAME"
 else
