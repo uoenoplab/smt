@@ -142,20 +142,20 @@ struct smt_tis_slot {
 	void *priv_tx;            /* NULL until lazy tls_dev_add */
 };
 
-/* SMT_TIS_PER_CPU per-CPU pool capacity. 64 covers loaded multi-flow
- * worker threads pushing all per-socket inflight RPCs concurrently
- * (-n N -s S → up to N RPCs in-flight per thread before any complete).
- * Total budget = NR_CPUS * 64 (e.g. 64*64=4096), still well under NIC
- * log_max_tis (~16K) on ConnectX-5/6. Bitmap fits in unsigned long.
+/* SMT_TIS_PER_CPU per-CPU pool capacity. Bumped to 128 to test whether
+ * post-3daedc3 grant scheduler increases TIS demand per CPU.
+ * Total budget = NR_CPUS * 128 (e.g. 64*128=8192), still under NIC
+ * log_max_tis (~16K) on ConnectX-5/6.
  */
-#define SMT_TIS_PER_CPU 64
+#define SMT_TIS_PER_CPU 128
 
 struct smt_hw_per_cpu_pool {
 	struct smt_tis_slot slots[SMT_TIS_PER_CPU];
 	/* free[bit_i]=1 means slots[i] is available to acquire. Updated via
-	 * atomic test_and_clear_bit / set_bit; no spinlock on the hot path.
+	 * atomic test_and_clear_bit / set_bit on the bitmap; no spinlock on
+	 * the hot path.
 	 */
-	unsigned long free;       /* bitmap, SMT_TIS_PER_CPU <= BITS_PER_LONG */
+	DECLARE_BITMAP(free, SMT_TIS_PER_CPU);
 	struct mutex create_lock; /* serializes lazy tls_dev_add per slot */
 } ____cacheline_aligned;
 

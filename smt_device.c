@@ -83,7 +83,7 @@ static int smt_hw_acquire_slot(struct smt_hw_per_cpu_pool *pool)
 	int i;
 
 	for (i = 0; i < SMT_TIS_PER_CPU; i++) {
-		if (test_and_clear_bit(i, &pool->free))
+		if (test_and_clear_bit(i, pool->free))
 			return i;
 	}
 	return -EAGAIN;
@@ -91,7 +91,7 @@ static int smt_hw_acquire_slot(struct smt_hw_per_cpu_pool *pool)
 
 static void smt_hw_return_slot(struct smt_hw_per_cpu_pool *pool, int slot_idx)
 {
-	set_bit(slot_idx, &pool->free);
+	set_bit(slot_idx, pool->free);
 }
 
 int smt_device_set_crypto_tx(struct homa_rpc *rpc)
@@ -330,11 +330,7 @@ int smt_hw_set_offload_tx(struct homa_sock *hsk, struct smt_context *ctx)
 	for (int i = 0; i < offload_ctx->nr_cpus; i++) {
 		struct smt_hw_per_cpu_pool *p = &offload_ctx->pools[i];
 
-		/* "1UL << 64" is UB; build the all-ones mask for the
-		 * SMT_TIS_PER_CPU low bits via GENMASK_ULL which handles
-		 * the 64-bit edge case correctly.
-		 */
-		p->free = GENMASK_ULL(SMT_TIS_PER_CPU - 1, 0);
+		bitmap_fill(p->free, SMT_TIS_PER_CPU);
 		mutex_init(&p->create_lock);
 	}
 
