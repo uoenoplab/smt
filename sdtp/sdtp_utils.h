@@ -1,0 +1,54 @@
+/*
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2024 The FreeBSD Foundation
+ *
+ * This software was developed by Eugenio Luo <>
+ * under sponsorship from the FreeBSD Foundation.
+ */
+
+/* Copyright (c) 2019-2022 Stanford University
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#ifndef _SDTP_UTILS_H_
+#define _SDTP_UTILS_H_
+
+#include <sys/refcount.h>
+
+#define SDTP_DEFINE_EXPECTED_TYPE(NAME, T) \
+	struct sdtp_expected_##NAME {      \
+		T value;                   \
+		int error;                 \
+	};
+
+#define SDTP_MAKE_UNEXPECTED(EXP_T, ERR) \
+	(EXP_T)                          \
+	{                                \
+		.error = (ERR),          \
+	}
+
+#define SDTP_MAKE_EXPECTED(EXP_T, V)      \
+	(EXP_T)                           \
+	{                                 \
+		.value = (V), .error = 0, \
+	}
+
+#define SDTP_IS_ERROR(EXP_VAL)	((EXP_VAL).error != 0)
+#define SDTP_GET_VAL(EXP_VAL)	((EXP_VAL).value)
+#define SDTP_GET_ERROR(EXP_VAL) ((EXP_VAL).error)
+
+typedef volatile u_int sdtp_ref_t;
+
+#endif
