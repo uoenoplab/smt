@@ -108,7 +108,6 @@ if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
   sysctl /net/homa/num_priorities=8
   sysctl /net/homa/max_nic_est_backlog_usecs=5
   sysctl /net/homa/unsched_bytes=60000
-  sysctl /net/homa/window=100000
   sysctl /net/homa/max_incoming=480000
   sysctl /net/homa/max_gso_size=10000
   # gro_busy_usecs: leave at module default (5). We don't invoke cloudlab `lb gen2`,
