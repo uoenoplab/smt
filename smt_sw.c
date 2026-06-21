@@ -277,6 +277,22 @@ int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb, u8 *smt_h,
 	smt_h[TLS_CIPHER_AES_GCM_128_IV_SIZE + 3] = payload_len >> 8;
 	smt_h[TLS_CIPHER_AES_GCM_128_IV_SIZE + 4] = payload_len & 0xff;
 
+#ifdef CONFIG_SMT_TX_LINEAR
+	/* TODO: make ~200B-and-smaller messages always go through alloc_skb()
+	 * into linear so this single-sg path covers them by default.
+	 */
+	if (skb_shinfo(skb)->nr_frags == 0) {
+		/* TX-linear: smt_h + payload + tag are contiguous in linear,
+		 * starting at smt_h. One sg entry covers the whole AEAD range.
+		 */
+		int total_len = SMT_RECORD_EXTRA_PRE_LENGTH + payload_len +
+				SMT_RECORD_EXTRA_POST_LENGTH;
+
+		sg_init_table(sg, 1);
+		sg_set_buf(&sg[0], smt_h, total_len);
+		nsg = 1;
+	} else {
+#endif
 	int n = skb_shinfo(skb)->nr_frags;
 	int i;
 
@@ -293,7 +309,9 @@ int smt_sw_encrypt(struct homa_rpc *rpc, struct sk_buff *skb, u8 *smt_h,
 				skb_frag_size(f), skb_frag_off(f));
 	}
 	nsg = n;
-
+#ifdef CONFIG_SMT_TX_LINEAR
+	}
+#endif
 	ret = smt_sw_do_crypt(crypto, sg, sg, payload_len, r->iv, true);
 	if (unlikely(ret)) {
 		smt_pr_err("%s: encrypt failed %d\n", __func__, ret);

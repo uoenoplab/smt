@@ -183,6 +183,9 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 #endif
 	do_div(segs, max_seg_data);
 
+#ifdef CONFIG_SMT_TX_LINEAR
+	bool tx_linear = (segs == 1);
+#endif
 #ifdef CONFIG_SMT
 	if (smt_length + max_seg_data <= pad_info.trl_len + segs * max_seg_data)
 		trailer_only = 1;
@@ -191,6 +194,7 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 #endif
 
 	/* Initialize the overall skb. Layouts:
+	 *  - tx_linear (CONFIG_SMT_TX_LINEAR + segs==1): full packet in linear.
 	 *  - SMT_HW: linear = data_hdr_minus_seg + smt_h (NIC TLS engine reads
 	 *    TLS rec hdr from linear at skb_tcp_all_headers offset).
 	 *  - SMT (SW): linear = data_hdr_minus_seg; smt_h + first seg_hdr +
@@ -204,11 +208,21 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 
 		if (smt_is_hw)
 			linear += pad_info.hdr_len;
+#ifdef CONFIG_SMT_TX_LINEAR
+		if (tx_linear)
+			linear = sizeof(struct homa_data_hdr) +
+				 pad_info.hdr_len + length + pad_info.trl_len;
+#endif
 		skb = homa_skb_alloc_tx(linear);
 	}
 	else
 #endif
 #ifndef __STRIP__ /* See strip.py */
+#ifdef CONFIG_SMT_TX_LINEAR
+		if (tx_linear)
+			skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) + length);
+		else
+#endif
 		skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr));
 #else /* See strip.py */
 		skb = homa_skb_alloc_tx(sizeof(struct homa_data_hdr) + length +
@@ -236,6 +250,16 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	if (smt_is_hw)
 		homa_set_doff(skb, sizeof(struct homa_data_hdr) -
 				sizeof(struct homa_seg_hdr));
+#ifdef CONFIG_SMT_TX_LINEAR
+	/* tx_linear: smt_h sits between the Homa header and the first seg_hdr,
+	 * so the data offset ends at smt_h — the same boundary as the HW layout.
+	 * Exclude the embedded seg_hdr so SW and HW tx_linear are wire-identical.
+	 * SMT-only: non-SMT tx_linear has no smt_h, so its doff stays data_hdr.
+	 */
+	if (tx_linear && is_smt_rpc(rpc))
+		homa_set_doff(skb, sizeof(struct homa_data_hdr) -
+				sizeof(struct homa_seg_hdr));
+#endif
 #endif /* CONFIG_SMT */
 	h->common.checksum = 0;
 	h->common.sender_id = cpu_to_be64(rpc->id);
@@ -271,73 +295,85 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 		 *     seg_hdr + payload + trailer then go in frag(s).
 		 *   SW crypto:  no fixed-offset constraint, so smt_h is prepended
 		 *     to seg_hdr inside frag[0].
+		 *   tx_linear:  small segs==1 fast path — smt_h + seg_hdr in linear.
 		 * smt_inline marks the segs==1 case where the payload is reserved
 		 * in the same contiguous frag as seg_hdr.
 		 */
-		if (smt_is_hw) {
-			/* HW: smt_h placeholder in linear (NIC TLS
-			 * engine reads TLS rec hdr at
-			 * skb_tcp_all_headers offset).
-			 */
+#ifdef CONFIG_SMT_TX_LINEAR
+		if (tx_linear) {
+			/* tx_linear: smt_h placeholder + seg_hdr in linear. */
 			smt_h = skb_put(skb, pad_info.hdr_len);
 			memset(smt_h, 0, pad_info.hdr_len);
+			h_s = (struct homa_seg_hdr *)skb_put(skb, sizeof(*h_s));
 		}
-
-		if (segs == 1) {
-			/* segs==1 contig frag.
-			 * HW: seg_hdr + payload + trailer.
-			 * SW: smt_h + seg_hdr + payload + trailer.
-			 */
-			int total = sizeof(struct homa_seg_hdr) +
-				    length + pad_info.trl_len;
-			u8 *frag_base;
-
-			if (!smt_is_hw)
-				total += pad_info.hdr_len;
-			if (total > HOMA_SKB_PAGE_SIZE ||
-			    skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS) {
-				err = -ENOMEM;
-				goto error;
-			}
-			frag_base = homa_skb_extend_frags(rpc->hsk->homa,
-							  skb, &total,
-							  true);
-			if (!frag_base) {
-				err = -ENOMEM;
-				goto error;
-			}
+		else
+#endif
+		{
 			if (smt_is_hw) {
-				h_s = (struct homa_seg_hdr *)frag_base;
-			} else {
-				smt_h = frag_base;
+				/* HW: smt_h placeholder in linear (NIC TLS
+				 * engine reads TLS rec hdr at
+				 * skb_tcp_all_headers offset).
+				 */
+				smt_h = skb_put(skb, pad_info.hdr_len);
 				memset(smt_h, 0, pad_info.hdr_len);
-				h_s = (struct homa_seg_hdr *)
-					(frag_base + pad_info.hdr_len);
 			}
-			memset(h_s, 0, sizeof(*h_s));
-			smt_inline = true;
-		} else {
-			/* segs>1.
-			 * HW: seg_hdr_0 in frag; rest interleaved.
-			 * SW: smt_h + seg_hdr_0 in frag; rest interleaved.
-			 */
-			int first = sizeof(struct homa_seg_hdr);
 
-			if (!smt_is_hw)
-				first += pad_info.hdr_len;
-			err = homa_skb_append_to_frag(rpc->hsk->homa,
-						      skb, smt_zero,
-						      first);
-			if (err)
-				goto error;
-			if (smt_is_hw) {
-				h_s = (struct homa_seg_hdr *)
-					skb_frag_address(&skb_shinfo(skb)->frags[0]);
+			if (segs == 1) {
+				/* segs==1 contig frag.
+				 * HW: seg_hdr + payload + trailer.
+				 * SW: smt_h + seg_hdr + payload + trailer.
+				 */
+				int total = sizeof(struct homa_seg_hdr) +
+					    length + pad_info.trl_len;
+				u8 *frag_base;
+
+				if (!smt_is_hw)
+					total += pad_info.hdr_len;
+				if (total > HOMA_SKB_PAGE_SIZE ||
+				    skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS) {
+					err = -ENOMEM;
+					goto error;
+				}
+				frag_base = homa_skb_extend_frags(rpc->hsk->homa,
+								  skb, &total,
+								  true);
+				if (!frag_base) {
+					err = -ENOMEM;
+					goto error;
+				}
+				if (smt_is_hw) {
+					h_s = (struct homa_seg_hdr *)frag_base;
+				} else {
+					smt_h = frag_base;
+					memset(smt_h, 0, pad_info.hdr_len);
+					h_s = (struct homa_seg_hdr *)
+						(frag_base + pad_info.hdr_len);
+				}
+				memset(h_s, 0, sizeof(*h_s));
+				smt_inline = true;
 			} else {
-				smt_h = (u8 *)skb_frag_address(
-						&skb_shinfo(skb)->frags[0]);
-				h_s = (struct homa_seg_hdr *)
-					(smt_h + pad_info.hdr_len);
+				/* segs>1.
+				 * HW: seg_hdr_0 in frag; rest interleaved.
+				 * SW: smt_h + seg_hdr_0 in frag; rest interleaved.
+				 */
+				int first = sizeof(struct homa_seg_hdr);
+
+				if (!smt_is_hw)
+					first += pad_info.hdr_len;
+				err = homa_skb_append_to_frag(rpc->hsk->homa,
+							      skb, smt_zero,
+							      first);
+				if (err)
+					goto error;
+				if (smt_is_hw) {
+					h_s = (struct homa_seg_hdr *)
+						skb_frag_address(&skb_shinfo(skb)->frags[0]);
+				} else {
+					smt_h = (u8 *)skb_frag_address(
+							&skb_shinfo(skb)->frags[0]);
+					h_s = (struct homa_seg_hdr *)
+						(smt_h + pad_info.hdr_len);
+				}
 			}
 		}
 	} else
@@ -385,6 +421,17 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 							 pad_info);
 	} else {
 		gso_size = max_seg_data;
+#ifdef CONFIG_SMT_TX_LINEAR
+		if (tx_linear) {
+			void *dst = skb_put(skb, length);
+
+			if (copy_from_iter(dst, length, iter) != length)
+				err = -EFAULT;
+			else
+				err = 0;
+		}
+		else
+#endif
 #ifdef CONFIG_SMT
 		if (smt_inline) {
 			void *dst = (u8 *)h_s + sizeof(struct homa_seg_hdr);
@@ -431,6 +478,15 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 		smt_zero[i] = 0xFF;
 #endif
 
+#ifdef CONFIG_SMT_TX_LINEAR
+	if (tx_linear) {
+		void *trl = skb_put(skb, pad_info.trl_len);
+
+		memcpy(trl, smt_zero, pad_info.trl_len);
+		err = 0;
+	}
+	else
+#endif
 	if (smt_inline) {
 		/* trailer region was zero'd by the initial memset of the
 		 * reserved frag; for NOCRYPTO, overwrite with the 0xFF pattern.
