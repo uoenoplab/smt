@@ -100,6 +100,14 @@ if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
   lsmod | grep -q '^homa ' || { echo "[!] homa not loaded after insmod" >&2; exit 1; }
 fi
 
+# Switch the mlx5 driver for this mode: smt-hw needs the SMT-patched driver
+# (mainline rejects SMT's tls_dev_add hack with -EOPNOTSUPP); all others use mainline.
+if [[ "$MODE" == "smt-hw" ]]; then
+  "${script_dir}/reload_mlx5.sh" smt-hw
+else
+  "${script_dir}/reload_mlx5.sh" mainline
+fi
+
 echo "[+] Resetting IPs on ${IFNAME}"
 ip addr flush dev "$IFNAME"
 echo "[+] Adding primary IP ${IPADDR_PRIMARY} on ${IFNAME}"
