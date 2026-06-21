@@ -230,6 +230,9 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	h->common.type = DATA;
 	homa_set_doff(skb, sizeof(struct homa_data_hdr));
 #ifdef CONFIG_SMT
+	/* HW: the first seg_hdr lives in a frag (see layout below), not in the
+	 * linear header block, so exclude it from the data offset.
+	 */
 	if (smt_is_hw)
 		homa_set_doff(skb, sizeof(struct homa_data_hdr) -
 				sizeof(struct homa_seg_hdr));
@@ -246,6 +249,10 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 	h->pad[1] = 0;
 	h->pad[2] = 0;
 #ifdef CONFIG_SMT
+	/* Stash this skb's byte offset into the 3 Homa-header pad bytes. GSO
+	 * replicates the header into every segment, so the SMT crypto path can
+	 * recover each segment's record offset from these bytes.
+	 */
 	if (is_smt_rpc(rpc)) {
 		u32 gso_offset = (u32)offset;
 		h->pad[0] = (gso_offset >> 16) & 0xff;
@@ -256,6 +263,17 @@ struct sk_buff *homa_tx_data_pkt_alloc(struct homa_rpc *rpc,
 
 #ifdef CONFIG_SMT
 	if (is_smt_rpc(rpc)) {
+		/* SMT TX layout — each segment is a TLS record:
+		 *   [smt_h (rec hdr, hdr_len)][seg_hdr][payload][trailer (tag)]
+		 * Where smt_h sits depends on who encrypts:
+		 *   HW offload: smt_h MUST be in the skb linear area — the NIC TLS
+		 *     engine reads the rec hdr at the skb_tcp_all_headers offset;
+		 *     seg_hdr + payload + trailer then go in frag(s).
+		 *   SW crypto:  no fixed-offset constraint, so smt_h is prepended
+		 *     to seg_hdr inside frag[0].
+		 * smt_inline marks the segs==1 case where the payload is reserved
+		 * in the same contiguous frag as seg_hdr.
+		 */
 		if (smt_is_hw) {
 			/* HW: smt_h placeholder in linear (NIC TLS
 			 * engine reads TLS rec hdr at
