@@ -21,8 +21,9 @@ Our [S&P'26 paper](smt-oakland26.pdf) “Designing Transport-Level Encryption fo
 
 This repository contains the SMT kernel implementation and the user-space tools used for evaluation. The list below identifies each major subdirectory and its role.
 
-- `module/`: SMT kernel module;
-- `mlx5-smt-patch/`: Nvidia/Mellanox NIC driver patch for SMT TLS offload;
+- `module/`: SMT kernel module (built on Homa/Linux);
+- `module-bsd/`: SMT FreeBSD kernel-module prototype;
+- `mlx5-smt-patch/`: Nvidia/Mellanox NIC driver patch for SMT (Linux) TLS offload;
 - `bench/unloaded/`: single-thread, single-socket SMT/Homa/TCPkTLS/TCP client/server;
 - `bench/loaded/`: multi-sockets, multi-threads SMT/Homa/TCPkTLS/TCP client/server;
 - `bench/util/`: configuration scripts, common header files;
