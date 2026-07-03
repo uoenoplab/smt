@@ -1,5 +1,10 @@
 # SMT (secure-message-transport)
 
+> [!NOTE]
+> **A newer version of SMT (Linux) is under active development on the [`smt-ng`](https://github.com/uoenoplab/smt/tree/smt-ng) branch, with the corresponding mlx5e NIC driver patch on the [`smt-ng-mlx5e-patch`](https://github.com/uoenoplab/smt/tree/smt-ng-mlx5e-patch) branch.**
+>
+> **It is closely synced to the latest upstream Homa.**
+
 Modern datacenter networks increasingly rely on high-bandwidth links and message-oriented transports such as Homa to support RPC-style workloads with low latency and high fan-out. At the same time, operators have widely deployed TLS over TCP to protect tenant traffic from eavesdropping and tampering in the network infrastructure.
 
 However, simply stacking TLS on top of a message-based transport breaks key properties: TLS assumes an in-order bytestream and does not map cleanly onto unordered messages, and existing TLS offload engines in commodity NICs are tightly integrated with TCP.
