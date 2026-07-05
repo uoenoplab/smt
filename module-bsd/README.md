@@ -8,7 +8,7 @@ Related talk at BSDCan 2026: [FreeBSD Implementation of the SMT transport protoc
 
 The module reuses FreeBSD's in-kernel TLS (kTLS) for encryption. A stock kernel does not
 expose the kTLS internals it needs, so building the module requires patching the kernel
-first: check out the FreeBSD source at base commit `<TBD>`, apply the patch in `patches/`,
+first: check out the FreeBSD source at base commit `0de6295af231aa5c13e1da2f40b29106962b6363`, apply the patch in `patches/`,
 and rebuild and install the kernel.
 
 To build:
