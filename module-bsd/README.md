@@ -32,7 +32,18 @@ sudo kldunload sdtp
 ## Benchmark
 
 `bench/unloaded/` builds `simple_client` / `simple_server`, a single-RPC-in-flight latency
-test speaking `--proto homa|sdtp|smt`. Measured numbers: `<TBD>`.
+test speaking `--proto homa|sdtp|smt`. Measured numbers:
+
+| Payload size (bytes) | Avg RTT latency (us) |
+| --- | --- |
+| 64 | 25.84 |
+| 128 | 25.86 |
+| 256 | 26.28 |
+| 512 | 27.12 |
+| 1024 | 28.70 |
+| 2048 | 37.91 |
+| 4096 | 49.41 |
+| 8192 | 77.39 |
 
 ## Status
 
