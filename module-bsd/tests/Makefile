@@ -1,21 +1,21 @@
-TESTSDIR= ${TESTSBASE}/sys/modules/sdtp
+TESTSDIR= ${TESTSBASE}/sys/modules/smt
 BINDIR= ${TESTSDIR}
 
-ATF_TESTS_SH+= sdtp_integration
+ATF_TESTS_SH+= smt_integration
 
-PROGS+= sdtp_test_send
-PROGS+= sdtp_test_recv
-PROGS+= sdtp_test_ipv6
-PROGS+= sdtp_test_close
+PROGS+= smt_test_send
+PROGS+= smt_test_recv
+PROGS+= smt_test_ipv6
+PROGS+= smt_test_close
 
-LIBADD.sdtp_test_send= pthread
+LIBADD.smt_test_send= pthread
 
 CFLAGS+= -I${SRCTOP}/sys
-CFLAGS+= -I${SRCTOP}/sys/modules/sdtp
+CFLAGS+= -I${.CURDIR}/..
 
-TEST_METADATA.sdtp_integration+= execenv="jail"
-TEST_METADATA.sdtp_integration+= execenv_jail_params="vnet"
-TEST_METADATA.sdtp_integration+= required_programs="ifconfig jail jexec kldload kldunload"
-TEST_METADATA.sdtp_integration+= is_exclusive="true"
+TEST_METADATA.smt_integration+= execenv="jail"
+TEST_METADATA.smt_integration+= execenv_jail_params="vnet"
+TEST_METADATA.smt_integration+= required_programs="ifconfig jail jexec kldload kldunload"
+TEST_METADATA.smt_integration+= is_exclusive="true"
 
 .include <bsd.test.mk>

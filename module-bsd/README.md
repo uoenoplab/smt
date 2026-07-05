@@ -20,19 +20,19 @@ make
 Load the module:
 
 ```sh
-sudo kldload ./sdtp.ko
+sudo kldload ./smt.ko
 ```
 
 Unload it with:
 
 ```sh
-sudo kldunload sdtp
+sudo kldunload smt
 ```
 
 ## Benchmark
 
 `bench/unloaded/` builds `simple_client` / `simple_server`, a single-RPC-in-flight latency
-test speaking `--proto homa|sdtp|smt`. Measured numbers:
+test speaking `--proto homa|smt`. Measured numbers:
 
 | Payload size (bytes) | Avg RTT latency (us) |
 | --- | --- |
