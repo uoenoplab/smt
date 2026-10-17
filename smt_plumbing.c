@@ -48,12 +48,15 @@ void smt_sock_destroy(struct homa_sock *hsk)
 	int i = 0;
 
 	struct smt_context *ctx = NULL;
+	struct hlist_node *tmp;
+
 	if (!hsk->smt)
 		return;
 	for (; i < HOMA_SERVER_RPC_BUCKETS; i++) {
 		if (hlist_empty(&SMT_SOCK(hsk)->ctx_buckets[i]))
 			continue;
-		hlist_for_each_entry(ctx, &SMT_SOCK(hsk)->ctx_buckets[i], hlist) {
+		hlist_for_each_entry_safe(ctx, tmp, &SMT_SOCK(hsk)->ctx_buckets[i],
+					  hlist) {
 #ifdef CONFIG_SMT_HW
 			if (ctx->tx_conf == SMT_HW)
 				smt_device_release_resources_tx(ctx);
