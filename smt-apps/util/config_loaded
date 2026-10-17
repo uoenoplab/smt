@@ -162,7 +162,9 @@ if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
   sysctl /net/homa/link_mbps=100000
   sysctl /net/homa/num_priorities=8
   sysctl /net/homa/max_nic_est_backlog_usecs=5
-  sysctl /net/homa/unsched_bytes=60000
+  # A message longer than unsched_bytes is sent entirely scheduled (upstream
+  # acf40a4b); 100000 keeps 64 KB messages unscheduled.
+  sysctl /net/homa/unsched_bytes=100000
   sysctl /net/homa/max_incoming=480000
   sysctl /net/homa/max_gso_size=10000
   # gro_busy_usecs: leave at module default (5). We don't invoke cloudlab `lb gen2`,
