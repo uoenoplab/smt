@@ -415,8 +415,9 @@ int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 
 	if (ctx == NULL)
 		ctx = smt_ctx_clone(rpc->hsk, addr, port, bucket);
-	if (IS_ERR(ctx)) {
-		rc = PTR_ERR(ctx);
+	/* NULL: no key for this peer and no wildcard to clone from. */
+	if (IS_ERR_OR_NULL(ctx)) {
+		rc = PTR_ERR_OR_ZERO(ctx);
 		goto out;
 	}
 
