@@ -253,19 +253,19 @@ static inline struct smt_rpc_sw_context *smt_rpc_sw_rx(struct homa_rpc *rpc)
  * outgoing (@tx) or incoming message: the RPC id with its client/server bit
  * dropped (so both ends agree), a request/response bit (one key encrypts both
  * the requests and the responses a socket sends to a peer), and a 16-bit
- * record count starting at the low 16 bits of @ctx_rec_seq. Nonces are thus
- * unique under a key as long as the key is used with one peer only and the
- * peer's RPC ids don't repeat during its lifetime.
+ * record count from 0, which a message's fewer than 2^16 records never carry
+ * out of (smt_outgoing.c). Nonces are thus unique under a key as long as the
+ * key is used with one peer only and the peer's RPC ids don't repeat during
+ * its lifetime.
  */
 static inline void smt_rpc_init_rec_seq(struct homa_rpc *rpc, bool tx,
-					const u8 *ctx_rec_seq, u8 *rec_seq)
+					u8 *rec_seq)
 {
 	u64 seq = ((rpc->id & GENMASK_ULL(47, 0)) >> 1) << 17;
 
 	if (homa_is_client(rpc->id) != tx)
 		seq |= 1 << 16;
-	put_unaligned_be64(seq | (get_unaligned_be64(ctx_rec_seq) & 0xffff),
-			   rec_seq);
+	put_unaligned_be64(seq, rec_seq);
 }
 
 /* Copied from tls.h tls_bigint_increment */

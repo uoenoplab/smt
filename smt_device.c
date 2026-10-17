@@ -275,7 +275,6 @@ error:
 
 int smt_hw_init_rpc(struct homa_rpc *rpc)
 {
-	struct smt_context *ctx = SMT_RPC(rpc)->ctx;
 	struct smt_rpc_hw_context_tx *r = smt_rpc_hw_tx(rpc);
 
 	BUILD_BUG_ON(sizeof(struct smt_rpc_hw_context_tx) >
@@ -283,8 +282,7 @@ int smt_hw_init_rpc(struct homa_rpc *rpc)
 
 	memset(r, 0, sizeof(*r));
 	r->slot_idx = -1;  /* sentinel: no pool slot yet */
-	smt_rpc_init_rec_seq(rpc, true, ctx->aes_gcm_128_send.rec_seq,
-			     r->rec_seq);
+	smt_rpc_init_rec_seq(rpc, true, r->rec_seq);
 	return 0;
 }
 

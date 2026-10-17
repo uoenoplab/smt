@@ -173,7 +173,7 @@ int smt_sw_init_rpc(struct homa_rpc *rpc, int tx)
 	BUILD_BUG_ON(sizeof(struct smt_rpc_sw_context) >
 		     sizeof(((struct smt_rpc *)0)->smt_rpc_crypto_tx));
 
-	smt_rpc_init_rec_seq(rpc, tx, info->rec_seq, r->rec_seq);
+	smt_rpc_init_rec_seq(rpc, tx, r->rec_seq);
 	memcpy(r->iv, info->salt, TLS_CIPHER_AES_GCM_128_SALT_SIZE);
 	memcpy(r->iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, r->rec_seq,
 	       TLS_CIPHER_AES_GCM_128_IV_SIZE);
