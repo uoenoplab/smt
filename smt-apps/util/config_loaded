@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Prepare a host for SMT/Homa loaded microbenchmarks.
+# Reloads the SMT/Homa kernel module, assigns IPs, tunes NIC/sysctl.
+# Usage: sudo ./config_loaded [-i IFNAME] [-a IPADDR] [-b IPADDR_SECOND] [-m MODE]
+
+if [[ $EUID -ne 0 ]]; then
+  echo "[!] This script must be run as root" >&2
+  exit 1
+fi
+
+script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "${script_dir}/../.." && pwd)"
+
+: "${IFNAME:=}"
+: "${MODE:=}"
+: "${IPADDR_PRIMARY:=}"
+: "${IPADDR_SECOND:=}"
+
+usage() {
+  cat <<'EOF'
+Usage: sudo ./config_loaded [-i IFNAME] [-a IPADDR] [-b IPADDR_SECOND] [-m MODE]
+  -i IFNAME        NIC interface name (e.g., ens1f1np1). Will prompt if unset.
+  -a IPADDR        Primary IP (CIDR) to assign to IFNAME (e.g., 10.0.0.1/24). Will prompt if unset.
+  -b IPADDR_SECOND Secondary IP (CIDR) to multi-home SMT/Homa (e.g., 10.0.1.1/24).
+                   Required for homa/smt-sw (compensates for Homa's lack of RSS).
+  -m MODE          One of: tcp, ktls-sw, homa, smt-sw. Will prompt if unset.
+  -h               Show this help and exit.
+EOF
+  exit "${1:-1}"
+}
+
+while getopts ":i:a:b:m:h" opt; do
+  case "$opt" in
+    i) IFNAME="$OPTARG" ;;
+    a) IPADDR_PRIMARY="$OPTARG" ;;
+    b) IPADDR_SECOND="$OPTARG" ;;
+    m) MODE="$OPTARG" ;;
+    h) usage 0 ;;
+    *) usage ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [[ $# -ne 0 ]]; then
+  echo "[!] Unexpected arguments: $*" >&2
+  usage
+fi
+
+if [[ -z "$IFNAME" ]]; then
+  read -rp "Enter NIC interface name (e.g., ens1f1np1): " IFNAME
+fi
+if [[ -z "$IFNAME" ]]; then
+  echo "[!] Interface name is required" >&2
+  usage
+fi
+
+if [[ -z "$MODE" ]]; then
+  read -rp "Enter mode (tcp|ktls-sw|ktls-hw|homa|smt-sw|smt-hw): " MODE
+fi
+case "$MODE" in
+  tcp|ktls-sw|ktls-hw|homa|smt-sw|smt-hw) ;;
+  *) echo "[!] Invalid mode: $MODE" >&2; usage ;;
+esac
+
+if [[ -z "$IPADDR_PRIMARY" ]]; then
+  read -rp "Enter primary IP address (CIDR) to assign to ${IFNAME} (e.g., 10.0.0.1/24): " IPADDR_PRIMARY
+fi
+if [[ -z "$IPADDR_PRIMARY" ]]; then
+  echo "[!] Primary IP address is required" >&2
+  usage
+fi
+
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+  if [[ -z "$IPADDR_SECOND" ]]; then
+    read -rp "Enter secondary IP (CIDR) for SMT/Homa (e.g., 10.0.1.1/24): " IPADDR_SECOND
+  fi
+  if [[ -z "$IPADDR_SECOND" ]]; then
+    echo "[!] Secondary IP is required for ${MODE} to compensate for lack of RSS" >&2
+    usage
+  fi
+fi
+
+echo "[+] IFNAME=${IFNAME}"
+echo "[+] IPADDR_PRIMARY=${IPADDR_PRIMARY}"
+echo "[+] IPADDR_SECOND=${IPADDR_SECOND:-\"\"}"
+echo "[+] MODE=${MODE}"
+echo "--------------------------------------------------"
+echo "sudo ${BASH_SOURCE[0]} -i ${IFNAME} -a ${IPADDR_PRIMARY} ${IPADDR_SECOND:+-b ${IPADDR_SECOND} }-m ${MODE}"
+echo "--------------------------------------------------"
+
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+  echo "[+] Reloading homa module"
+  if lsmod | grep -q '^homa '; then
+    rmmod homa || { echo "[!] rmmod homa failed (still in use?)" >&2; exit 1; }
+  fi
+  insmod "${repo_root}/homa.ko"
+  lsmod | grep -q '^homa ' || { echo "[!] homa not loaded after insmod" >&2; exit 1; }
+fi
+
+# Switch the mlx5 driver for this mode: smt-hw needs the SMT-patched driver
+# (mainline rejects SMT's tls_dev_add hack with -EOPNOTSUPP); all others use mainline.
+if [[ "$MODE" == "smt-hw" ]]; then
+  "${script_dir}/reload_mlx5.sh" smt-hw
+else
+  "${script_dir}/reload_mlx5.sh" mainline
+fi
+
+echo "[+] Resetting IPs on ${IFNAME}"
+ip addr flush dev "$IFNAME"
+echo "[+] Adding primary IP ${IPADDR_PRIMARY} on ${IFNAME}"
+ip addr add "$IPADDR_PRIMARY" dev "$IFNAME"
+if [[ -n "${IPADDR_SECOND}" ]]; then
+  echo "[+] Adding secondary IP ${IPADDR_SECOND} on ${IFNAME}"
+  ip addr add "$IPADDR_SECOND" dev "$IFNAME"
+fi
+
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+  : "${NTUPLE_PRI:=0}"
+  : "${NTUPLE_SEC:=2}"
+  echo "[+] Setting SMT/Homa ntuple steering on ${IFNAME} (action $NTUPLE_PRI / $NTUPLE_SEC)"
+  ethtool -K "$IFNAME" ntuple on || true
+  # Clear leftover rules first (NIC filter table is finite; reloads accumulate).
+  for id in $(ethtool -n "$IFNAME" 2>/dev/null | awk '/^Filter:/{print $2}'); do
+    ethtool -N "$IFNAME" delete "$id" >/dev/null 2>&1 || true
+  done
+  ethtool -X "$IFNAME" default || true
+  ethtool -N "$IFNAME" flow-type ip4 l4proto 0x92 dst-ip "${IPADDR_PRIMARY%/*}" action "$NTUPLE_PRI" || true
+  if [[ -n "${IPADDR_SECOND}" ]]; then
+    ethtool -N "$IFNAME" flow-type ip4 l4proto 0x92 dst-ip "${IPADDR_SECOND%/*}" action "$NTUPLE_SEC" || true
+  fi
+  ethtool -n "$IFNAME" || true
+fi
+
+if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" || "$MODE" == "ktls-hw" ]]; then
+  echo "[+] Setting TCP indirection table (equal 4) on ${IFNAME}"
+  ethtool -X "$IFNAME" equal 4 || true
+fi
+
+echo "[+] Setting CPU governor to performance and enable turbo"
+cpupower frequency-set -g performance
+echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo || echo 1 > /sys/devices/system/cpu/cpufreq/boost
+
+echo "[+] Setting NIC coalesce on ${IFNAME}"
+ethtool -C "$IFNAME" adaptive-rx off rx-usecs 0 rx-frames 1
+
+if [[ "$MODE" == "smt-hw" || "$MODE" == "ktls-hw" ]]; then
+  echo "[+] Enabling NIC TLS TX offload on ${IFNAME}"
+  ethtool -K "$IFNAME" tls-hw-tx-offload on || {
+    echo "[!] tls-hw-tx-offload could not be enabled — patched mlx5_core required" >&2
+    exit 1
+  }
+else
+  echo "[+] Disabling NIC TLS TX offload on ${IFNAME}"
+  ethtool -K "$IFNAME" tls-hw-tx-offload off || true
+fi
+
+if [[ "$MODE" == "homa" || "$MODE" == "smt-sw" || "$MODE" == "smt-hw" ]]; then
+  echo "[+] Applying Homa sysctls (cloudlab 25G profile)"
+  sysctl /net/homa/link_mbps=100000
+  sysctl /net/homa/num_priorities=8
+  sysctl /net/homa/max_nic_est_backlog_usecs=5
+  sysctl /net/homa/unsched_bytes=60000
+  sysctl /net/homa/max_incoming=480000
+  sysctl /net/homa/max_gso_size=10000
+  # gro_busy_usecs: leave at module default (5). We don't invoke cloudlab `lb gen2`,
+  # which would force =0 for per-packet bypass; default lets GRO batch on 100G.
+fi
+
+if [[ "$MODE" == "smt-hw" ]]; then
+  echo "[+] Setting smt_hardware_interface=${IFNAME}"
+  sysctl /net/homa/smt_hardware_interface="$IFNAME"
+fi
+
+echo "[+] Setting IRQ affinity policy (allnuma) on ${IFNAME}"
+"${script_dir}/config_queues" -i "$IFNAME" -m "${IRQAFF:-allnuma}"
+
+if [[ "$MODE" == "tcp" || "$MODE" == "ktls-sw" || "$MODE" == "ktls-hw" ]]; then
+  echo "[+] Disable RPS on ${IFNAME}"
+  "${script_dir}/config_rps" no_rps "$IFNAME"
+else
+  echo "[+] Enable RPS on ${IFNAME}"
+  "${script_dir}/config_rps" "$IFNAME"
+fi
+
+echo "[+] Done. Ready to run loaded binaries."
