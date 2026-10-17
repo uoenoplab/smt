@@ -418,6 +418,16 @@ int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 		rc = PTR_ERR_OR_ZERO(ctx);
 		goto out;
 	}
+#ifndef CONFIG_SMT_NOCRYPTO
+	/* An RPC both sends and receives: without the RX key smt_sw_decrypt
+	 * has no crypto pool, and without the TX key the message would leave
+	 * in clear.
+	 */
+	if (ctx->tx_conf == SMT_BASE || ctx->rx_conf == SMT_BASE) {
+		rc = -ENOKEY;
+		goto out;
+	}
+#endif
 
 	SMT_RPC(rpc)->ctx = ctx;
 	SMT_RPC(rpc)->decrypt_offset = 0;
