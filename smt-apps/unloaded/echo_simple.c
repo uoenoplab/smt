@@ -7,6 +7,7 @@ struct sockaddr_in saddr = { 0 };
 uint32_t req_size = 0;
 uint32_t resp_size = 0;
 uint64_t num_max_rtts = 0;
+bool check_echo = false;
 
 // server - len is resp_size - req_size
 // client - len is req_size
@@ -49,6 +50,7 @@ void print_help(char *prog_name, bool is_server) {
   printf("    <request-size>,<response-size>: specified request and response lengths by a pair (e.g., `-l 1000,200`)\n");
   if (!is_server) {
   printf("  -n, --num-rtts <count>            Optional: stop after <count> round trips (default: stop with Ctrl-C).\n");
+  printf("  -c, --check                       Homa/SMT: stamp each request and verify the echoed response byte for byte.\n");
   }
   printf("  -v, --verbose                     Increase log level; repeat for more detail.\n");
   printf("                                      (default: info; -v: debug; -vv: trace; -vvv: trace + hexdump)\n");
@@ -76,6 +78,7 @@ void parse_args(int argc, char *argv[], bool is_server) {
     // common
     {"payload-size", required_argument, 0, 'l'},
     {"num-rtts", required_argument, 0, 'n'},
+    {"check", no_argument, 0, 'c'},
     {"verbose", no_argument, 0, 'v'},
     {"quiet", no_argument, 0, 'q'},
     {"help", no_argument, 0, 'h'},
@@ -91,7 +94,7 @@ void parse_args(int argc, char *argv[], bool is_server) {
   struct hostent *server_hostent;
   bool server_ipaddr_set = false;
 
-  while ((opt = getopt_long(argc, argv, "r:a:p:l:n:vqh", long_options, &option_index)) != -1) {
+  while ((opt = getopt_long(argc, argv, "r:a:p:l:n:cvqh", long_options, &option_index)) != -1) {
     switch (opt) {
       case 'r':
         protocol = parse_protocol(optarg);
@@ -144,6 +147,9 @@ void parse_args(int argc, char *argv[], bool is_server) {
           exit(EXIT_FAILURE);
         }
         num_max_rtts = (uint64_t)parsed;
+        break;
+      case 'c':
+        check_echo = true;
         break;
       case 'v':
         // each -v bumps one level: -v=debug, -vv=trace, -vvv=trace+hexdump

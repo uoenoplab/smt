@@ -24,6 +24,7 @@ extern struct sockaddr_in saddr;
 extern uint32_t req_size;
 extern uint32_t resp_size;
 extern uint64_t num_max_rtts;
+extern bool check_echo;
 
 // server - len is resp_size - req_size
 // client - len is req_size

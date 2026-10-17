@@ -4,7 +4,41 @@
 struct timespec send_time = { 0 }, recv_time = { 0 };
 int sockfd = 0, ret = 0;
 
+/* --check: stamp the RPC's sequence number into every 1KB block of the
+ * request, so a response holding bytes from the wrong place or the wrong
+ * RPC is caught by comparing it with the request.
+ */
+static uint64_t check_seq;
+
+static inline void check_stamp(void) {
+  check_seq++;
+  for (uint32_t i = 0; i + sizeof(check_seq) <= req_size; i += 1024)
+    memcpy(send_buf + i, &check_seq, sizeof(check_seq));
+}
+
+static inline void check_response(struct iovec *vecs, int num_vecs) {
+  uint32_t len = resp_size < req_size ? resp_size : req_size;
+  uint32_t off = 0;
+
+  for (int i = 0; i < num_vecs && off < len; i++) {
+    uint32_t n = vecs[i].iov_len < len - off ? vecs[i].iov_len : len - off;
+    const uint8_t *got = vecs[i].iov_base;
+
+    for (uint32_t j = 0; j < n; j++) {
+      if (got[j] != send_buf[off + j]) {
+        log_fatal("echo mismatch in rpc %llu at offset %u of %u: got 0x%02x, sent 0x%02x",
+                  (unsigned long long)check_seq, off + j, len, got[j],
+                  send_buf[off + j]);
+        exit(EXIT_FAILURE);
+      }
+    }
+    off += n;
+  }
+}
+
 static inline void homa_send_recv(int sockfd, struct histogram *rtt_hist) {
+  if (check_echo)
+    check_stamp();
   clock_gettime(CLOCK_MONOTONIC_RAW, &send_time);
   struct homa_sendmsg_args send_control = { 0 };
   struct iovec send_vec = { .iov_base = (void *)send_buf, .iov_len = req_size};
@@ -63,6 +97,8 @@ static inline void homa_send_recv(int sockfd, struct histogram *rtt_hist) {
 
   clock_gettime(CLOCK_MONOTONIC_RAW, &recv_time);
   add_rtt(rtt_hist, send_time, recv_time, req_size, resp_size);
+  if (check_echo)
+    check_response(homa_vecs, recv_vecs_len);
 
   if (verbose_level > 0) {
     char saddr_recv_ip[INET_ADDRSTRLEN];
