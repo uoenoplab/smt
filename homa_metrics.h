@@ -277,6 +277,11 @@ struct homa_metrics {
 	u64 softirq_cycles;
 
 	/**
+	 * @bypass_softirq_calls: calls to homa_softirq via GRO bypass.
+	 */
+	u64 bypass_softirq_calls;
+
+	/**
 	 * @bypass_softirq_cycles: total time spent executing homa_softirq when
 	 * invoked during GRO, bypassing the SoftIRQ mechanism.
 	 */
@@ -799,6 +804,106 @@ struct homa_metrics {
 	 * mechanism (triggered by HOMA_GRO_SHORT_BYPASS).
 	 */
 	u64 gro_data_bypasses;
+
+	/** @homa_rpc_alloc_client_calls: homa_rpc_alloc_client invocations. */
+	u64 homa_rpc_alloc_client_calls;
+	/** @homa_rpc_alloc_client_cycles: TSC cycles in homa_rpc_alloc_client. */
+	u64 homa_rpc_alloc_client_cycles;
+
+	/** @homa_tx_copy_from_user_calls: homa_tx_copy_from_user invocations. */
+	u64 homa_tx_copy_from_user_calls;
+	/** @homa_tx_copy_from_user_cycles: TSC cycles in homa_tx_copy_from_user. */
+	u64 homa_tx_copy_from_user_cycles;
+
+	/** @homa_dispatch_pkts_calls: homa_dispatch_pkts invocations. */
+	u64 homa_dispatch_pkts_calls;
+	/** @homa_dispatch_pkts_cycles: TSC cycles in homa_dispatch_pkts. */
+	u64 homa_dispatch_pkts_cycles;
+
+	/** @homa_copy_to_user_calls: homa_copy_to_user invocations. */
+	u64 homa_copy_to_user_calls;
+	/** @homa_copy_to_user_cycles: TSC cycles in homa_copy_to_user. */
+	u64 homa_copy_to_user_cycles;
+
+#ifdef CONFIG_HOMA_SMT_PROFILING
+	/** @smt_rx_calc_calls: calls to smt_calc_rx_logical_info. */
+	u64 smt_rx_calc_calls;
+	/** @smt_rx_calc_cycles: TSC cycles in smt_calc_rx_logical_info. */
+	u64 smt_rx_calc_cycles;
+
+	/** @smt_record_complete_calls: calls to smt_record_complete. */
+	u64 smt_record_complete_calls;
+	/** @smt_record_complete_cycles: TSC cycles in smt_record_complete. */
+	u64 smt_record_complete_cycles;
+
+	/** @smt_record_complete_true: times smt_record_complete returned true. */
+	u64 smt_record_complete_true;
+
+	/** @smt_ctx_init_calls: calls to smt_rpc_ctx_init (SMT active). */
+	u64 smt_ctx_init_calls;
+	/** @smt_ctx_init_cycles: TSC cycles in smt_rpc_ctx_init. */
+	u64 smt_ctx_init_cycles;
+
+	/** @smt_ctx_query_calls: smt_ctx_query inside smt_rpc_ctx_init. */
+	u64 smt_ctx_query_calls;
+	/** @smt_ctx_query_cycles: TSC cycles in smt_ctx_query. */
+	u64 smt_ctx_query_cycles;
+
+	/** @smt_ctx_clone_calls: smt_ctx_clone inside smt_rpc_ctx_init. */
+	u64 smt_ctx_clone_calls;
+	/** @smt_ctx_clone_cycles: TSC cycles in smt_ctx_clone. */
+	u64 smt_ctx_clone_cycles;
+
+	/** @smt_ctx_dst_mtu_calls: dst_mtu inside smt_rpc_ctx_init. */
+	u64 smt_ctx_dst_mtu_calls;
+	/** @smt_ctx_dst_mtu_cycles: TSC cycles in dst_mtu. */
+	u64 smt_ctx_dst_mtu_cycles;
+
+	/** @smt_sw_encrypt_calls: smt_sw_encrypt invocations. */
+	u64 smt_sw_encrypt_calls;
+	/** @smt_sw_encrypt_cycles: TSC cycles in smt_sw_encrypt (full). */
+	u64 smt_sw_encrypt_cycles;
+
+	/** @smt_sw_decrypt_calls: smt_sw_decrypt invocations. */
+	u64 smt_sw_decrypt_calls;
+	/** @smt_sw_decrypt_cycles: TSC cycles in smt_sw_decrypt (full). */
+	u64 smt_sw_decrypt_cycles;
+
+	/** @smt_sw_aead_enc_calls: AEAD encrypt invocations. */
+	u64 smt_sw_aead_enc_calls;
+	/** @smt_sw_aead_enc_cycles: TSC cycles in crypto_aead_encrypt path. */
+	u64 smt_sw_aead_enc_cycles;
+
+	/** @smt_sw_aead_dec_calls: AEAD decrypt invocations. */
+	u64 smt_sw_aead_dec_calls;
+	/** @smt_sw_aead_dec_cycles: TSC cycles in crypto_aead_decrypt path. */
+	u64 smt_sw_aead_dec_cycles;
+
+	/** @smt_sw_pop_calls: smt_sw_pop_crypto invocations. */
+	u64 smt_sw_pop_calls;
+	/** @smt_sw_pop_cycles: TSC cycles in smt_sw_pop_crypto (lock+pop). */
+	u64 smt_sw_pop_cycles;
+
+	/** @smt_sw_push_calls: smt_sw_push_crypto invocations. */
+	u64 smt_sw_push_calls;
+	/** @smt_sw_push_cycles: TSC cycles in smt_sw_push_crypto (lock+push). */
+	u64 smt_sw_push_cycles;
+
+	/** @smt_sw_borrow_calls: smt_sw_borrow_crypto invocations (full). */
+	u64 smt_sw_borrow_calls;
+	/** @smt_sw_borrow_cycles: TSC cycles in smt_sw_borrow_crypto. */
+	u64 smt_sw_borrow_cycles;
+
+	/** @smt_sw_alloc_calls: smt_sw_alloc_crypto invocations (pool grow). */
+	u64 smt_sw_alloc_calls;
+	/** @smt_sw_alloc_cycles: TSC cycles in smt_sw_alloc_crypto. */
+	u64 smt_sw_alloc_cycles;
+
+	/** @smt_copy_to_user_iter_calls: iterations of the while(true) record
+	 * loop in homa_copy_to_user (one per record processed).
+	 */
+	u64 smt_copy_to_user_iter_calls;
+#endif /* CONFIG_HOMA_SMT_PROFILING */
 
 	/** @temp: For temporary use during testing. */
 #define NUM_TEMP_METRICS 10

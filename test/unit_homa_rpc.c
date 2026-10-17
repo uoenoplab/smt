@@ -135,7 +135,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__basics_from_data_packet)
 	struct homa_rpc *srpc;
 
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc));
 	homa_rpc_unlock(srpc);
 	EXPECT_EQ(RPC_INCOMING, srpc->state);
@@ -156,7 +156,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__basics_from_start_msg_packet)
 	h.common.sender_id = cpu_to_be64(self->client_id);
 	h.msg_length = N(3000);
 
-	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip, &h.common);
+	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip, &h.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc));
 	homa_rpc_unlock(srpc);
 	EXPECT_EQ(RPC_INCOMING, srpc->state);
@@ -173,7 +173,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__no_buffer_pool)
 	homa_pool_free(self->hsk.buffer_pool);
 	self->hsk.buffer_pool = NULL;
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	EXPECT_TRUE(IS_ERR(srpc));
 	EXPECT_EQ(ENOMEM, -PTR_ERR(srpc));
 	EXPECT_EQ(0, unit_list_length(&self->hsk.active_rpcs));
@@ -183,14 +183,14 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__already_exists)
 	struct homa_rpc *srpc1, *srpc2, *srpc3;
 
 	srpc1 = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				      &self->data.common);
+				      &self->data.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc1));
 	homa_rpc_unlock(srpc1);
 	self->data.common.sender_id = cpu_to_be64(
 			be64_to_cpu(self->data.common.sender_id)
 			+ 2*HOMA_SERVER_RPC_BUCKETS);
 	srpc2 = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				      &self->data.common);
+				      &self->data.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc2));
 	homa_rpc_unlock(srpc2);
 	EXPECT_NE(srpc2, srpc1);
@@ -198,7 +198,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__already_exists)
 			be64_to_cpu(self->data.common.sender_id)
 			- 2*HOMA_SERVER_RPC_BUCKETS);
 	srpc3 = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				      &self->data.common);
+				      &self->data.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc3));
 	homa_rpc_unlock(srpc3);
 	EXPECT_EQ(srpc3, srpc1);
@@ -209,7 +209,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__malloc_error)
 
 	mock_kmalloc_errors = 1;
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	EXPECT_TRUE(IS_ERR(srpc));
 	EXPECT_EQ(ENOMEM, -PTR_ERR(srpc));
 }
@@ -219,7 +219,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__addr_error)
 
 	mock_route_errors = 1;
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	EXPECT_TRUE(IS_ERR(srpc));
 	EXPECT_EQ(EHOSTUNREACH, -PTR_ERR(srpc));
 }
@@ -229,7 +229,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__allocate_buffers)
 
 	self->data.msg_length = N(3*HOMA_BPAGE_SIZE);
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc));
 	homa_rpc_unlock(srpc);
 	EXPECT_EQ(3, srpc->msgin.num_bpages);
@@ -243,7 +243,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__cant_allocate_buffers)
 	homa_pool_free(self->hsk.buffer_pool);
 	self->hsk.buffer_pool = homa_pool_alloc(&self->hsk);
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	ASSERT_TRUE(IS_ERR(srpc));
 	EXPECT_EQ(ENOMEM, -PTR_ERR(srpc));
 }
@@ -253,7 +253,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__socket_shutdown)
 
 	self->hsk.shutdown = 1;
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	EXPECT_TRUE(IS_ERR(srpc));
 	EXPECT_EQ(ESHUTDOWN, -PTR_ERR(srpc));
 	EXPECT_EQ(0, unit_list_length(&self->hsk.active_rpcs));
@@ -265,7 +265,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__handoff_rpc)
 
 	self->data.msg_length = N(1400);
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc));
 	homa_rpc_unlock(srpc);
 	EXPECT_EQ(RPC_INCOMING, srpc->state);
@@ -281,7 +281,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__dont_handoff_no_buffers)
 	self->data.msg_length = N(1400);
 	atomic_set(&self->hsk.buffer_pool->free_bpages, 0);
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc));
 	homa_rpc_unlock(srpc);
 	EXPECT_EQ(0, unit_list_length(&self->hsk.ready_rpcs));
@@ -297,7 +297,7 @@ TEST_F(homa_rpc, homa_rpc_alloc_server__dont_handoff_rpc_start_msg)
 	h.common.type = START_MSG;
 	h.common.sender_id = cpu_to_be64(self->client_id);
 	h.msg_length = N(3000);
-	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip, &h.common);
+	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip, &h.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc));
 	homa_rpc_unlock(srpc);
 	EXPECT_EQ(RPC_INCOMING, srpc->state);
@@ -317,7 +317,7 @@ TEST_F(homa_rpc, homa_bucket_lock_slow)
 	homa_rpc_end(crpc);
 	homa_rpc_unlock(crpc);
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	ASSERT_FALSE(IS_ERR(srpc));
 	homa_rpc_unlock(srpc);
 

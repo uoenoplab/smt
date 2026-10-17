@@ -357,7 +357,7 @@ struct homa_rpc *unit_server_rpc(struct homa_sock *hsk,
 		.sender_id = cpu_to_be64(id ^ 1)
 	};
 	h.msg_length = htonl(req_length);
-	srpc = homa_rpc_alloc_server(hsk, client_ip, &h.common);
+	srpc = homa_rpc_alloc_server(hsk, client_ip, &h.common, NULL);
 
 	if (IS_ERR(srpc))
 		return NULL;

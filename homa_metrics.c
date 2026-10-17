@@ -249,6 +249,8 @@ char *homa_metrics_print(void)
 		  "Calls to homa_softirq (i.e. # GRO pkts received)\n");
 		M("softirq_cycles", m->softirq_cycles,
 		  "Time spent in homa_softirq during SoftIRQ\n");
+		M("bypass_softirq_calls", m->bypass_softirq_calls,
+		  "Calls to homa_softirq via GRO bypass\n");
 		M("bypass_softirq_cycles", m->bypass_softirq_cycles,
 		  "Time spent in homa_softirq during bypass from GRO\n");
 		M("linux_softirq_cycles", m->linux_softirq_cycles,
@@ -432,6 +434,84 @@ char *homa_metrics_print(void)
 		  "Grant packets passed directly to homa_softirq by homa_gro_receive\n");
 		M("gro_data_bypasses", m->gro_data_bypasses,
 		  "Data packets passed directly to homa_softirq by homa_gro_receive\n");
+		M("homa_rpc_alloc_client_calls", m->homa_rpc_alloc_client_calls,
+		  "homa_rpc_alloc_client invocations\n");
+		M("homa_rpc_alloc_client_cycles", m->homa_rpc_alloc_client_cycles,
+		  "TSC cycles in homa_rpc_alloc_client\n");
+		M("homa_tx_copy_from_user_calls", m->homa_tx_copy_from_user_calls,
+		  "homa_tx_copy_from_user invocations\n");
+		M("homa_tx_copy_from_user_cycles", m->homa_tx_copy_from_user_cycles,
+		  "TSC cycles in homa_tx_copy_from_user\n");
+		M("homa_dispatch_pkts_calls", m->homa_dispatch_pkts_calls,
+		  "homa_dispatch_pkts invocations\n");
+		M("homa_dispatch_pkts_cycles", m->homa_dispatch_pkts_cycles,
+		  "TSC cycles in homa_dispatch_pkts\n");
+		M("homa_copy_to_user_calls", m->homa_copy_to_user_calls,
+		  "homa_copy_to_user invocations\n");
+		M("homa_copy_to_user_cycles", m->homa_copy_to_user_cycles,
+		  "TSC cycles in homa_copy_to_user\n");
+#ifdef CONFIG_HOMA_SMT_PROFILING
+		M("smt_rx_calc_calls", m->smt_rx_calc_calls,
+		  "smt_calc_rx_logical_info invocations\n");
+		M("smt_rx_calc_cycles", m->smt_rx_calc_cycles,
+		  "TSC cycles in smt_calc_rx_logical_info\n");
+		M("smt_record_complete_calls", m->smt_record_complete_calls,
+		  "smt_record_complete invocations\n");
+		M("smt_record_complete_cycles", m->smt_record_complete_cycles,
+		  "TSC cycles in smt_record_complete\n");
+		M("smt_record_complete_true", m->smt_record_complete_true,
+		  "times smt_record_complete returned true\n");
+		M("smt_ctx_init_calls", m->smt_ctx_init_calls,
+		  "smt_rpc_ctx_init invocations (SMT active)\n");
+		M("smt_ctx_init_cycles", m->smt_ctx_init_cycles,
+		  "TSC cycles in smt_rpc_ctx_init\n");
+		M("smt_ctx_query_calls", m->smt_ctx_query_calls,
+		  "smt_rpc_ctx_init:smt_ctx_query invocations\n");
+		M("smt_ctx_query_cycles", m->smt_ctx_query_cycles,
+		  "smt_rpc_ctx_init:smt_ctx_query TSC cycles\n");
+		M("smt_ctx_clone_calls", m->smt_ctx_clone_calls,
+		  "smt_rpc_ctx_init:smt_ctx_clone invocations\n");
+		M("smt_ctx_clone_cycles", m->smt_ctx_clone_cycles,
+		  "smt_rpc_ctx_init:smt_ctx_clone TSC cycles\n");
+		M("smt_ctx_dst_mtu_calls", m->smt_ctx_dst_mtu_calls,
+		  "smt_rpc_ctx_init:dst_mtu invocations\n");
+		M("smt_ctx_dst_mtu_cycles", m->smt_ctx_dst_mtu_cycles,
+		  "smt_rpc_ctx_init:dst_mtu TSC cycles\n");
+		M("smt_sw_encrypt_calls", m->smt_sw_encrypt_calls,
+		  "smt_sw_encrypt invocations\n");
+		M("smt_sw_encrypt_cycles", m->smt_sw_encrypt_cycles,
+		  "TSC cycles in smt_sw_encrypt (full)\n");
+		M("smt_sw_decrypt_calls", m->smt_sw_decrypt_calls,
+		  "smt_sw_decrypt invocations\n");
+		M("smt_sw_decrypt_cycles", m->smt_sw_decrypt_cycles,
+		  "TSC cycles in smt_sw_decrypt (full)\n");
+		M("smt_sw_aead_enc_calls", m->smt_sw_aead_enc_calls,
+		  "AEAD encrypt invocations (smt_sw)\n");
+		M("smt_sw_aead_enc_cycles", m->smt_sw_aead_enc_cycles,
+		  "TSC cycles in crypto_aead_encrypt (smt_sw)\n");
+		M("smt_sw_aead_dec_calls", m->smt_sw_aead_dec_calls,
+		  "AEAD decrypt invocations (smt_sw)\n");
+		M("smt_sw_aead_dec_cycles", m->smt_sw_aead_dec_cycles,
+		  "TSC cycles in crypto_aead_decrypt (smt_sw)\n");
+		M("smt_sw_pop_calls", m->smt_sw_pop_calls,
+		  "smt_sw_pop_crypto invocations\n");
+		M("smt_sw_pop_cycles", m->smt_sw_pop_cycles,
+		  "TSC cycles in smt_sw_pop_crypto (lock+pop)\n");
+		M("smt_sw_push_calls", m->smt_sw_push_calls,
+		  "smt_sw_push_crypto invocations\n");
+		M("smt_sw_push_cycles", m->smt_sw_push_cycles,
+		  "TSC cycles in smt_sw_push_crypto (lock+push)\n");
+		M("smt_sw_borrow_calls", m->smt_sw_borrow_calls,
+		  "smt_sw_borrow_crypto invocations\n");
+		M("smt_sw_borrow_cycles", m->smt_sw_borrow_cycles,
+		  "TSC cycles in smt_sw_borrow_crypto\n");
+		M("smt_sw_alloc_calls", m->smt_sw_alloc_calls,
+		  "smt_sw_alloc_crypto invocations (pool grow)\n");
+		M("smt_sw_alloc_cycles", m->smt_sw_alloc_cycles,
+		  "TSC cycles in smt_sw_alloc_crypto\n");
+		M("smt_copy_to_user_iter_calls", m->smt_copy_to_user_iter_calls,
+		  "homa_copy_to_user record-loop iterations (records processed)\n");
+#endif /* CONFIG_HOMA_SMT_PROFILING */
 		for (i = 0; i < NUM_TEMP_METRICS;  i++) {
 			snprintf(name, sizeof(name), "temp%d", i);
 			M(name, m->temp[i], "Temporary use in testing\n");
