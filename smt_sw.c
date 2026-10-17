@@ -166,7 +166,8 @@ void smt_sw_release_resources(struct smt_context *ctx, int tx)
 	}
 }
 
-/* Initialize per-RPC iv/salt/rec_seq from the context's crypto_info. The
+/* Initialize per-RPC iv/salt/rec_seq from the context's crypto_info: the
+ * explicit nonce is the record's sequence number, as for the NIC. The
  * crypto tfm is borrowed lazily on first encrypt/decrypt call.
  */
 int smt_sw_init_rpc(struct homa_rpc *rpc, int tx)
@@ -180,10 +181,10 @@ int smt_sw_init_rpc(struct homa_rpc *rpc, int tx)
 	BUILD_BUG_ON(sizeof(struct smt_rpc_sw_context) >
 		     sizeof(((struct smt_rpc *)0)->smt_rpc_crypto_tx));
 
+	smt_rpc_init_rec_seq(rpc, tx, info->rec_seq, r->rec_seq);
 	memcpy(r->iv, info->salt, TLS_CIPHER_AES_GCM_128_SALT_SIZE);
-	memcpy(r->iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, info->iv,
+	memcpy(r->iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, r->rec_seq,
 	       TLS_CIPHER_AES_GCM_128_IV_SIZE);
-	memcpy(r->rec_seq, info->rec_seq, TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);
 	return 0;
 }
 

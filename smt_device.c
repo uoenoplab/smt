@@ -3,17 +3,11 @@
  * the Makefile drops smt_device.o from the build otherwise.
  *
  * Lifted, with light edits, from ~/repos/smt/module/smt_device.c. Kept
- * close to the original to preserve battle-tested control flow. The two
- * intentional differences vs the old module:
- *   1. composite_id is dropped (rpc_hw_ctx->rec_seq is initialized via
- *      memcpy from the ctx's TLS rec_seq; no per-RPC mixing of message_id
- *      into the high bits). Bring this back when bench requires it.
- *      rec_seq is the sequence number of the message's first record;
- *      smt_tx_skb_hdr adds the record index.
- *   2. driver_state allocation is simplified: one driver_state allocated
- *      lazily on the first encrypt, shared across all RPCs in this ctx,
- *      with queue_idx round-robined across the netdev's TX queues. The
- *      threshold-based growth from the old module is deferred.
+ * close to the original to preserve battle-tested control flow. The
+ * difference vs the old module: driver_state (a TIS) lives in per-CPU pools
+ * of SMT_TIS_PER_CPU slots, created lazily per slot; each RPC takes a slot
+ * on its CPU when its message is copied in and returns it once the message
+ * has been handed to the IP stack.
  *
  * Per-queue xmit_lock is intentionally absent: queue pinning + one TIS
  * per TX queue makes the netdev TX queue itself the serialization point.
@@ -289,11 +283,8 @@ int smt_hw_init_rpc(struct homa_rpc *rpc)
 
 	memset(r, 0, sizeof(*r));
 	r->slot_idx = -1;  /* sentinel: no pool slot yet */
-	memcpy(r->rec_seq, ctx->aes_gcm_128_send.rec_seq,
-	       TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);
-
-	smt_pr_devel("%s: rpc=%lld rec_seq init from ctx\n",
-		     __func__, rpc->id);
+	smt_rpc_init_rec_seq(rpc, true, ctx->aes_gcm_128_send.rec_seq,
+			     r->rec_seq);
 	return 0;
 }
 

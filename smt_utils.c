@@ -181,6 +181,16 @@ static int smt_ctx_init(struct homa_sock *hsk,
 		goto out;
 	}
 
+	/* Records take their nonce from their sequence number (see
+	 * smt_rpc_init_rec_seq), so iv must equal rec_seq.
+	 */
+	if (memcmp(crypto_info_optval->aes_gcm_128.iv,
+		   crypto_info_optval->aes_gcm_128.rec_seq,
+		   TLS_CIPHER_AES_GCM_128_IV_SIZE)) {
+		rc = -EINVAL;
+		goto out;
+	}
+
 	/* Copy optval to smt_ctx */
 	*crypto_info = crypto_info_optval->aes_gcm_128;
 

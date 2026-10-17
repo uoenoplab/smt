@@ -160,7 +160,9 @@ client key   (16B) : 8D D2 30 A7 7A 05 EB 71 15 91 29 BC BC F6 42 30
 client salt  (4B)  : 87 C6 35 C8            # first 4 bytes of client_iv_hardcode
 server key   (16B) : 6C CF 62 FF 4B E6 14 85 D8 BA 29 FE 2E 84 7A 7F
 server salt  (4B)  : B9 FA 55 83            # first 4 bytes of server_iv_hardcode
-initial rec_seq    : 00 00 00 00 00 00 00 00   (increments by 1 per record)
+initial rec_seq    : 00 00 00 00 00 00 00 00   (increments by 1 per record;
+                     newer builds start each message at a value derived
+                     from its RPC id — read it from the wire)
 ```
 
 To decrypt a record (only if you want to; a dissector does not need to). This

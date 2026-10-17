@@ -24,8 +24,12 @@
 
 #include "homa_tx_pool.h"
 
-/* h->pad holds a record's offset in 24 bits. */
+/* h->pad holds a record's offset in 24 bits, and smt_rpc_rec_seq leaves 16
+ * bits to count a message's records.
+ */
 static_assert(HOMA_MAX_MESSAGE_LENGTH < 1 << 24);
+static_assert(DIV_ROUND_UP(HOMA_MAX_MESSAGE_LENGTH,
+			   HOMA_MIN_SEG_DATA - SMT_RECORD_EXTRA_LENGTH) < 1 << 16);
 
 /* Message bytes in the record that starts at @offset. */
 static inline int smt_tx_rec_len(struct homa_rpc *rpc, u32 offset)
