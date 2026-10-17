@@ -825,6 +825,20 @@ struct homa_metrics {
 	/** @homa_copy_to_user_cycles: TSC cycles in homa_copy_to_user. */
 	u64 homa_copy_to_user_cycles;
 
+#ifdef CONFIG_SMT
+	/**
+	 * @smt_replay_drops: packets dropped because they would have created
+	 * a server RPC for a request that was already authenticated.
+	 */
+	u64 smt_replay_drops;
+
+	/**
+	 * @smt_replay_too_old: packets dropped because they would have created
+	 * a server RPC for a request older than the replay window.
+	 */
+	u64 smt_replay_too_old;
+#endif /* CONFIG_SMT */
+
 #ifdef CONFIG_HOMA_SMT_PROFILING
 	/** @smt_rx_calc_calls: calls to smt_calc_rx_logical_info. */
 	u64 smt_rx_calc_calls;

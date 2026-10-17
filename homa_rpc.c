@@ -216,11 +216,15 @@ struct homa_rpc *homa_rpc_alloc_server(struct homa_sock *hsk,
 		err = -ESHUTDOWN;
 		goto error;
 	}
+#ifdef CONFIG_SMT
+	err = smt_rpc_alloc_server_sock_lock(hsk, srpc);
+	if (err != 0) {
+		homa_sock_unlock(hsk);
+		goto error;
+	}
+#endif
 	hlist_add_head(&srpc->hash_links, &bucket->rpcs);
 	list_add_tail_rcu(&srpc->active_links, &hsk->active_rpcs);
-#ifdef CONFIG_SMT
-	smt_rpc_alloc_server_sock_lock(hsk, srpc);
-#endif
 	homa_sock_unlock(hsk);
 #ifdef CONFIG_SMT
 	/* SMT can only deliver whole records: hand off early only when this

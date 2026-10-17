@@ -90,6 +90,28 @@ enum {
 
 #define SMT_MAX_CRYPT_SG 128
 
+/* Message numbers (RPC id >> 1) a server remembers per peer. A peer's ids
+ * come from a per-host counter, so the window spans that host's RPCs across
+ * all its sockets: a request whose first packet arrives after more than
+ * SMT_REPLAY_WINDOW newer RPCs of that host were authenticated is dropped as
+ * too old. A lost request is first resent after about resend_ticks +
+ * resend_interval ms, which this covers up to ~6 M RPCs/s per client host.
+ * A client host whose counter restarts (reboot, module reload, next_id) is
+ * dropped as too old until it catches up; it needs a new server socket.
+ */
+#define SMT_REPLAY_WINDOW (1 << 16)
+
+/* Anti-replay state for the requests a server receives from one peer: the
+ * highest message number authenticated so far, and which of the
+ * SMT_REPLAY_WINDOW numbers up to it have been authenticated (bit
+ * m % SMT_REPLAY_WINDOW).
+ */
+struct smt_replay_window {
+	spinlock_t lock;
+	u64 top;
+	DECLARE_BITMAP(seen, SMT_REPLAY_WINDOW);
+};
+
 struct smt_context {
 	u8 tx_conf : 3;
 	u8 rx_conf : 3;
@@ -102,6 +124,8 @@ struct smt_context {
 
 	void *offload_tx;
 	void *offload_rx;
+
+	struct smt_replay_window replay;
 
 	struct hlist_node hlist;
 };
@@ -303,6 +327,8 @@ static inline const u8 *smt_rpc_tx_rec_seq(struct homa_rpc *rpc)
 }
 
 /* smt_incoming.c */
+
+void smt_replay_accept(struct homa_rpc *rpc);
 
 /* Index of this packet within its record: GSO/TSO number the segments of
  * each packet from IP id 0 (see homa_gso_segment), and ip_select_ident gives

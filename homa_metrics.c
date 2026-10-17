@@ -450,6 +450,12 @@ char *homa_metrics_print(void)
 		  "homa_copy_to_user invocations\n");
 		M("homa_copy_to_user_cycles", m->homa_copy_to_user_cycles,
 		  "TSC cycles in homa_copy_to_user\n");
+#ifdef CONFIG_SMT
+		M("smt_replay_drops", m->smt_replay_drops,
+		  "Packets dropped as replays of SMT requests\n");
+		M("smt_replay_too_old", m->smt_replay_too_old,
+		  "Packets dropped as SMT requests older than the replay window\n");
+#endif /* CONFIG_SMT */
 #ifdef CONFIG_HOMA_SMT_PROFILING
 		M("smt_rx_calc_calls", m->smt_rx_calc_calls,
 		  "smt_calc_rx_logical_info invocations\n");

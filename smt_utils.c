@@ -74,6 +74,7 @@ static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 		return ERR_PTR(-ENOMEM);
 	}
 
+	spin_lock_init(&ctx->replay.lock);
 	ctx->tx_conf = reuse_ctx->tx_conf;
 	ctx->rx_conf = reuse_ctx->rx_conf;
 	ctx->peer_addr = peer_addr;
@@ -368,6 +369,7 @@ int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 			goto out;
 		}
 		memset(ctx, 0, sizeof(*ctx));
+		spin_lock_init(&ctx->replay.lock);
 		hlist_add_head(&ctx->hlist, bucket);
 	}
 

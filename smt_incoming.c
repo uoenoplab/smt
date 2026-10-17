@@ -109,12 +109,72 @@ int smt_data_offset(struct sk_buff *skb)
 	return offset;
 }
 
+/* Whether @rpc's request can't be new: its message number is older than the
+ * window or was authenticated already. Counts the reason.
+ */
+static bool smt_replay_seen(struct homa_rpc *rpc)
+{
+	struct smt_replay_window *w = &SMT_RPC(rpc)->ctx->replay;
+	u64 m = rpc->id >> 1;
+	bool seen = false;
+
+	spin_lock_bh(&w->lock);
+	if (m <= w->top) {
+		if (w->top - m >= SMT_REPLAY_WINDOW) {
+			INC_METRIC(smt_replay_too_old, 1);
+			seen = true;
+		} else if (test_bit(m % SMT_REPLAY_WINDOW, w->seen)) {
+			INC_METRIC(smt_replay_drops, 1);
+			seen = true;
+		}
+	}
+	spin_unlock_bh(&w->lock);
+	return seen;
+}
+
+/**
+ * smt_replay_accept() - Record that the request of server RPC @rpc has been
+ * authenticated (its first record decrypted), so a replay of it is dropped
+ * by smt_rpc_alloc_server_sock_lock. Unauthenticated packets never move the
+ * window. Called with the RPC unlocked, so the RPC may already have ended
+ * and been unhashed; a replay arriving in that gap gets through.
+ * @rpc:  Server RPC whose first record has just been decrypted.
+ */
+void smt_replay_accept(struct homa_rpc *rpc)
+{
+	struct smt_replay_window *w = &SMT_RPC(rpc)->ctx->replay;
+	u64 m = rpc->id >> 1;
+
+	spin_lock_bh(&w->lock);
+	if (m > w->top) {
+		u64 skipped = m - w->top - 1;
+
+		if (skipped >= SMT_REPLAY_WINDOW) {
+			bitmap_zero(w->seen, SMT_REPLAY_WINDOW);
+		} else {
+			/* Clear the slots of the numbers skipped over. */
+			u32 start = (w->top + 1) % SMT_REPLAY_WINDOW;
+			u32 n = min_t(u64, skipped, SMT_REPLAY_WINDOW - start);
+
+			bitmap_clear(w->seen, start, n);
+			bitmap_clear(w->seen, 0, skipped - n);
+		}
+		w->top = m;
+	} else if (w->top - m >= SMT_REPLAY_WINDOW) {
+		/* Too old to record; a replay of it is too old as well. */
+		goto out;
+	}
+	__set_bit(m % SMT_REPLAY_WINDOW, w->seen);
+out:
+	spin_unlock_bh(&w->lock);
+}
+
 int smt_rpc_alloc_server_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
 {
 	int err;
 
 	err = smt_rpc_ctx_init(hsk, rpc);
-	if (err)
+	if (err || !is_smt_rpc(rpc))
 		return err;
-	return 0;
+	return smt_replay_seen(rpc) ? -EALREADY : 0;
 }
