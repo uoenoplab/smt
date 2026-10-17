@@ -359,6 +359,7 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 	homa_info = homa_get_skb_info(skb);
 	memset(homa_info, 0, sizeof(*homa_info));
 	homa_info->data_bytes = *end - offset;
+	homa_info->offset = offset;
 	homa_info->dont_defer = false;
 	return skb;
 

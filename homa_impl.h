@@ -528,6 +528,12 @@ struct homa_skb_info {
 	int data_bytes;
 
 	/**
+	 * @offset: offset within the message of the first byte of data in
+	 * this packet.
+	 */
+	u32 offset;
+
+	/**
 	 * @dont_defer: True means that homa_qdisc_enqueue should pass this
 	 * packet along without considering NIC congestion. This flag is set
 	 * by the pacer when it retransmits packets after deferral.
