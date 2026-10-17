@@ -53,18 +53,16 @@ static void smt_sw_push_crypto(struct smt_sw_context *sw_ctx,
 	SMT_TIME_END(smt_sw_push, __t);
 }
 
-/* Allocate a new crypto_aead + aead_request and bind the per-direction
- * key from the smt_context.
+/* Allocate a new crypto_aead + aead_request bound to @info's key. May
+ * sleep (crypto_alloc_aead).
  */
-static struct smt_sw_crypto *smt_sw_alloc_crypto(struct smt_context *ctx,
-						 int tx)
+static struct smt_sw_crypto *
+smt_sw_alloc_crypto(const struct tls12_crypto_info_aes_gcm_128 *info)
 {
 	struct smt_sw_crypto *crypto;
-	struct tls12_crypto_info_aes_gcm_128 *info =
-		tx ? &ctx->aes_gcm_128_send : &ctx->aes_gcm_128_recv;
 	int rc;
 
-	crypto = kzalloc(sizeof(*crypto), GFP_ATOMIC);
+	crypto = kzalloc(sizeof(*crypto), GFP_KERNEL);
 	if (!crypto)
 		return ERR_PTR(-ENOMEM);
 	INIT_LIST_HEAD(&crypto->list);
@@ -84,7 +82,7 @@ static struct smt_sw_crypto *smt_sw_alloc_crypto(struct smt_context *ctx,
 	if (rc)
 		goto err_free_tfm;
 
-	crypto->aead_req = aead_request_alloc(crypto->tfm, GFP_ATOMIC);
+	crypto->aead_req = aead_request_alloc(crypto->tfm, GFP_KERNEL);
 	if (!crypto->aead_req) {
 		rc = -ENOMEM;
 		goto err_free_tfm;
@@ -103,53 +101,52 @@ err_free_tfm:
 	return ERR_PTR(rc);
 }
 
-int smt_sw_set_offload(struct smt_context *ctx, int tx)
+/**
+ * smt_sw_ctx_alloc() - Allocate a crypto pool for one direction's key.
+ * May sleep, so it must not be called in atomic context. Entries are
+ * borrowed for one encrypt/decrypt call, so the pool rarely grows past
+ * the number of CPUs; smt_sw_borrow_crypto adds entries if it runs dry.
+ * @info:  The key.
+ * @n:     Number of entries to pre-allocate (capped at the number of
+ *         online CPUs).
+ * Return: The pool, or an ERR_PTR.
+ */
+struct smt_sw_context *
+smt_sw_ctx_alloc(const struct tls12_crypto_info_aes_gcm_128 *info, int n)
 {
 	struct smt_sw_context *sw_ctx;
 	struct smt_sw_crypto *crypto;
-	int target = min_t(int, num_online_cpus(),
-			   homa_net(current->nsproxy->net_ns)->homa->smt_sw_pool_init);
 	int i;
 
-	sw_ctx = kmalloc(sizeof(*sw_ctx), GFP_ATOMIC);
+	sw_ctx = kmalloc(sizeof(*sw_ctx), GFP_KERNEL);
 	if (!sw_ctx)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 	INIT_LIST_HEAD(&sw_ctx->crypto_list);
 	spin_lock_init(&sw_ctx->crypto_list_lock);
 	sw_ctx->crypto_available = 0;
+	refcount_set(&sw_ctx->refs, 1);
 
-	if (tx) {
-		ctx->offload_tx = sw_ctx;
-		ctx->tx_conf = SMT_SW;
-	} else {
-		ctx->offload_rx = sw_ctx;
-		ctx->rx_conf = SMT_SW;
-	}
-
-	/* Pre-populate the pool with one entry per online CPU. With per-call
-	 * borrow scope, peak concurrent crypts <= N_CPUs, so the pool stays
-	 * at this size forever and the alloc-on-empty branch never fires in
-	 * the hot path. Best-effort: if any alloc fails partway, ship what
-	 * we have; smt_sw_borrow will lazy-alloc later if it ever runs dry.
-	 */
-	for (i = 0; i < target; i++) {
-		crypto = smt_sw_alloc_crypto(ctx, tx);
+	n = min_t(int, num_online_cpus(), n);
+	for (i = 0; i < n; i++) {
+		crypto = smt_sw_alloc_crypto(info);
 		if (IS_ERR(crypto))
 			break;
 		list_add_tail(&crypto->list, &sw_ctx->crypto_list);
 		sw_ctx->crypto_available++;
 	}
-	return 0;
+	return sw_ctx;
 }
 
-void smt_sw_release_resources(struct smt_context *ctx, int tx)
+/**
+ * smt_sw_ctx_put() - Drop a reference to a pool, freeing it with the last.
+ * @sw_ctx:  The pool; NULL is ignored.
+ */
+void smt_sw_ctx_put(struct smt_sw_context *sw_ctx)
 {
-	struct smt_sw_context *sw_ctx = tx ? ctx->offload_tx : ctx->offload_rx;
 	struct smt_sw_crypto *crypto, *tmp;
 
-	if (!sw_ctx)
+	if (!sw_ctx || !refcount_dec_and_test(&sw_ctx->refs))
 		return;
-
 	list_for_each_entry_safe(crypto, tmp, &sw_ctx->crypto_list, list) {
 		list_del(&crypto->list);
 		if (crypto->aead_req)
@@ -159,11 +156,6 @@ void smt_sw_release_resources(struct smt_context *ctx, int tx)
 		kfree(crypto);
 	}
 	kfree(sw_ctx);
-	if (tx) {
-		ctx->offload_tx = NULL;
-	} else {
-		ctx->offload_rx = NULL;
-	}
 }
 
 /* Initialize per-RPC iv/salt/rec_seq from the context's crypto_info: the
@@ -190,7 +182,7 @@ int smt_sw_init_rpc(struct homa_rpc *rpc, int tx)
 
 /* Borrow a crypto pool entry for one encrypt/decrypt call. The entry is
  * released back via smt_sw_push_crypto at the end of the call. The pool
- * is pre-populated at smt_sw_set_offload time, so the alloc-on-empty
+ * is pre-populated by smt_sw_ctx_alloc, so the alloc-on-empty
  * branch should not fire in steady state.
  */
 static struct smt_sw_crypto *smt_sw_borrow_crypto(struct homa_rpc *rpc,
@@ -206,7 +198,8 @@ static struct smt_sw_crypto *smt_sw_borrow_crypto(struct homa_rpc *rpc,
 	crypto = smt_sw_pop_crypto(sw_ctx);
 	if (!crypto) {
 		__t_alloc = SMT_TIME_START();
-		crypto = smt_sw_alloc_crypto(ctx, tx);
+		crypto = smt_sw_alloc_crypto(tx ? &ctx->aes_gcm_128_send :
+						     &ctx->aes_gcm_128_recv);
 		SMT_TIME_END(smt_sw_alloc, __t_alloc);
 		if (IS_ERR(crypto))
 			return crypto;

@@ -16,17 +16,7 @@ int smt_setsockopt(struct sock *sk, int level, int optname,
 	switch (optname) {
 	case TLS_TX:
 	case TLS_RX:
-		homa_sock_lock(hsk);
-		if (!hsk->smt) {
-			rc = __smt_sock_init(hsk, hsk->homa);
-			if (rc) {
-				homa_sock_unlock(hsk);
-				return rc;
-			}
-		}
-		rc = smt_ctx_setup(hsk, optval, optlen,
-						  optname == TLS_TX);
-		homa_sock_unlock(hsk);
+		rc = smt_ctx_setup(hsk, optval, optlen, optname == TLS_TX);
 		break;
 	default:
 		rc = -ENOPROTOOPT;
@@ -38,7 +28,7 @@ int smt_setsockopt(struct sock *sk, int level, int optname,
 int smt_sock_init(struct homa_sock *hsk, struct homa *homa)
 {
 	// Actual SMT socket initialization is performed until smt_setsockopt
-	// with __smt_sock_init
+	// with smt_ctx_setup
 	hsk->smt = NULL;
 	return 0;
 }
@@ -62,9 +52,9 @@ void smt_sock_destroy(struct homa_sock *hsk)
 				smt_device_release_resources_tx(ctx);
 #endif
 			if (ctx->tx_conf == SMT_SW)
-				smt_sw_release_resources(ctx, 1);
+				smt_sw_ctx_put(ctx->offload_tx);
 			if (ctx->rx_conf == SMT_SW)
-				smt_sw_release_resources(ctx, 0);
+				smt_sw_ctx_put(ctx->offload_rx);
 			smt_ctx_destory(ctx);
 		}
 	}

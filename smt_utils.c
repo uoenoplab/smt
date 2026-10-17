@@ -40,21 +40,6 @@ static inline struct hlist_head *smt_ctx_bucket(struct homa_sock *hsk,
 	return &SMT_SOCK(hsk)->ctx_buckets[bucket_id];
 }
 
-int __smt_sock_init(struct homa_sock *hsk, struct homa *homa)
-{
-	int i;
-
-	hsk->smt = kmalloc(sizeof(struct smt_sock), GFP_KERNEL);
-	if (!hsk->smt)
-		return -ENOMEM;
-
-	for (i = 0; i < HOMA_SERVER_RPC_BUCKETS; i++)
-		INIT_HLIST_HEAD(&SMT_SOCK(hsk)->ctx_buckets[i]);
-
-	SMT_SOCK(hsk)->reuse_ctx = NULL;
-	return 0;
-}
-
 // hsk->smt is expected to be not NULL before call
 static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 					 const uint32_t peer_addr,
@@ -82,10 +67,6 @@ static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 	ctx->aes_gcm_128_send = reuse_ctx->aes_gcm_128_send;
 	ctx->aes_gcm_128_recv = reuse_ctx->aes_gcm_128_recv;
 
-	/* Eagerly alloc per-ctx offload state under the sock lock; lazy alloc
-	 * in smt_sw_borrow_crypto would race across bucket-locked TX paths
-	 * sharing this ctx.
-	 */
 #ifdef CONFIG_SMT_HW
 	if (ctx->tx_conf == SMT_HW) {
 		int rc = smt_hw_set_offload_tx(hsk, ctx);
@@ -98,28 +79,14 @@ static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 		}
 	}
 #endif /* CONFIG_SMT_HW */
-	if (ctx->tx_conf == SMT_SW) {
-		int rc = smt_sw_set_offload(ctx, 1);
-
-		if (rc) {
-			kmem_cache_free(smt_ctx_kmem, ctx);
-			return ERR_PTR(rc);
-		}
-	}
-	if (ctx->rx_conf == SMT_SW) {
-		int rc = smt_sw_set_offload(ctx, 0);
-
-		if (rc) {
-#ifdef CONFIG_SMT_HW
-			if (ctx->tx_conf == SMT_HW)
-				smt_device_release_resources_tx(ctx);
-#endif
-			if (ctx->tx_conf == SMT_SW)
-				smt_sw_release_resources(ctx, 1);
-			kmem_cache_free(smt_ctx_kmem, ctx);
-			return ERR_PTR(rc);
-		}
-	}
+	/* This runs in atomic context (softirq for a server RPC), where no
+	 * tfm can be allocated, and the clone has the wildcard's keys: share
+	 * the wildcard's SW crypto pools.
+	 */
+	if (ctx->tx_conf == SMT_SW)
+		ctx->offload_tx = smt_sw_ctx_get(reuse_ctx->offload_tx);
+	if (ctx->rx_conf == SMT_SW)
+		ctx->offload_rx = smt_sw_ctx_get(reuse_ctx->offload_rx);
 
 	hlist_add_head(&ctx->hlist, bucket);
 
@@ -155,7 +122,8 @@ out:
 
 static int smt_ctx_init(struct homa_sock *hsk,
 			       struct smt_aes_gcm_128_info *crypto_info_optval,
-			       struct smt_context *ctx, int tx)
+			       struct smt_context *ctx, int tx,
+			       struct smt_sw_context **sw)
 {
 	SMT_TRACE_FUNC_ENTER();
 	struct tls12_crypto_info_aes_gcm_128 *crypto_info;
@@ -251,23 +219,22 @@ static int smt_ctx_init(struct homa_sock *hsk,
 			smt_pr_devel("%s: HW TX offload unavailable (rc=%d), falling back to SW\n",
 				     __func__, rc);
 			ctx->tx_conf = SMT_SW;
+			rc = 0;
 		}
 #else
 		ctx->tx_conf = SMT_SW;
 #endif
 		if (ctx->tx_conf == SMT_SW) {
-			rc = smt_sw_set_offload(ctx, tx);
-			if (rc)
-				goto out;
+			ctx->offload_tx = *sw;
+			*sw = NULL;
 		}
 	}
 
 	if (!tx && !ctx->offload_rx) {
 		/* No RX HW TLS offload anywhere in the stack; always SW. */
 		ctx->rx_conf = SMT_SW;
-		rc = smt_sw_set_offload(ctx, tx);
-		if (rc)
-			goto out;
+		ctx->offload_rx = *sw;
+		*sw = NULL;
 	}
 
 out:
@@ -279,7 +246,11 @@ int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 {
 	int rc = 0;
 	union smt_info_union crypto_info_optval;
+	struct smt_sw_context *sw = NULL;
 	struct smt_context *ctx = NULL;
+	struct smt_sock *smt = NULL;
+	struct hlist_head *bucket;
+	bool created = false;
 
 	size_t optsize;
 
@@ -355,10 +326,29 @@ int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 		}
 	}
 
-	struct hlist_head *bucket = smt_ctx_bucket(hsk,
-		crypto_info_optval.smt.peer_addr,
-		crypto_info_optval.smt.peer_port);
+	/* Everything that may sleep happens before taking the socket lock. */
+	smt = kzalloc(sizeof(*smt), GFP_KERNEL);
+	if (!smt) {
+		rc = -ENOMEM;
+		goto out;
+	}
+#ifndef CONFIG_SMT_NOCRYPTO
+	sw = smt_sw_ctx_alloc(&crypto_info_optval.smt_aes_gcm_128.aes_gcm_128,
+			      hsk->homa->smt_sw_pool_init);
+	if (IS_ERR(sw)) {
+		rc = PTR_ERR(sw);
+		sw = NULL;
+		goto out;
+	}
+#endif
 
+	homa_sock_lock(hsk);
+	if (!hsk->smt) {
+		hsk->smt = smt;
+		smt = NULL;
+	}
+	bucket = smt_ctx_bucket(hsk, crypto_info_optval.smt.peer_addr,
+				crypto_info_optval.smt.peer_port);
 	ctx = smt_ctx_query(hsk, crypto_info_optval.smt.peer_addr,
 		crypto_info_optval.smt.peer_port, bucket);
 
@@ -366,11 +356,24 @@ int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 		ctx = kmem_cache_alloc(smt_ctx_kmem, GFP_ATOMIC);
 		if (!ctx) {
 			rc = -ENOMEM;
-			goto out;
+			goto unlock;
 		}
 		memset(ctx, 0, sizeof(*ctx));
 		spin_lock_init(&ctx->replay.lock);
 		hlist_add_head(&ctx->hlist, bucket);
+		created = true;
+	}
+
+	rc = smt_ctx_init(hsk, &crypto_info_optval.smt_aes_gcm_128, ctx, tx,
+			  &sw);
+	if (rc) {
+		/* A ctx that existed before may be in use by RPCs. */
+		if (created) {
+			hlist_del(&ctx->hlist);
+			memzero_explicit(ctx, sizeof(*ctx));
+			kmem_cache_free(smt_ctx_kmem, ctx);
+		}
+		goto unlock;
 	}
 
 	if ((crypto_info_optval.smt.peer_addr == 0)
@@ -382,17 +385,12 @@ int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 		SMT_SOCK(hsk)->reuse_ctx = ctx;
 	}
 
-	rc = smt_ctx_init(hsk, &crypto_info_optval.smt_aes_gcm_128, ctx, tx);
-	if (rc)
-		goto err_crypto_info;
-
-	goto out;
-
-err_crypto_info:
-	hlist_del(&ctx->hlist);
-	memzero_explicit(ctx, sizeof(*ctx));
-	kmem_cache_free(smt_ctx_kmem, ctx);
+unlock:
+	homa_sock_unlock(hsk);
 out:
+	/* Whatever the socket and the ctx did not take. */
+	kfree(smt);
+	smt_sw_ctx_put(sw);
 	return rc;
 }
 

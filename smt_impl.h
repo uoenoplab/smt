@@ -4,6 +4,7 @@
 
 #include <crypto/aead.h>
 #include <linux/bits.h>
+#include <linux/refcount.h>
 #include <linux/scatterlist.h>
 #include <linux/unaligned.h>
 
@@ -145,6 +146,8 @@ struct smt_sw_context {
 	struct list_head crypto_list;
 	spinlock_t crypto_list_lock;
 	int crypto_available;
+	/* The ctx that allocated it plus the clones sharing it. */
+	refcount_t refs;
 };
 
 /* Per-RPC software crypto state. Lives inside smt_rpc::smt_rpc_crypto_tx/rx.
@@ -226,7 +229,6 @@ extern struct kmem_cache *smt_ctx_kmem;
 int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 				  unsigned int optlen, int tx);
 
-int __smt_sock_init(struct homa_sock *hsk, struct homa *homa);
 
 static inline void smt_ctx_destory(struct smt_context *ctx)
 {
@@ -279,14 +281,22 @@ static inline bool smt_bigint_increment(u8 *seq, int len)
 	return (i == -1);
 }
 
-int smt_sw_set_offload(struct smt_context *ctx, int tx);
+struct smt_sw_context *
+smt_sw_ctx_alloc(const struct tls12_crypto_info_aes_gcm_128 *info, int n);
+void smt_sw_ctx_put(struct smt_sw_context *sw_ctx);
+
+static inline struct smt_sw_context *
+smt_sw_ctx_get(struct smt_sw_context *sw_ctx)
+{
+	refcount_inc(&sw_ctx->refs);
+	return sw_ctx;
+}
 int smt_sw_init_rpc(struct homa_rpc *rpc, int tx);
 
 struct homa_frag_filler;
 int smt_sw_encrypt(struct homa_rpc *rpc, u32 rec,
 		   const struct homa_frag_filler *pos, int payload_len);
 
-void smt_sw_release_resources(struct smt_context *ctx, int tx);
 
 #ifdef CONFIG_SMT_HW
 /* smt_device.c */
