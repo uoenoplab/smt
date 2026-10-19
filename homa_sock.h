@@ -266,6 +266,13 @@ struct homa_sock {
 	atomic_t protect_count;
 
 	/**
+	 * @reapers: number of calls to homa_rpc_reap that are collecting or
+	 * freeing dead RPCs for this socket. RPCs leave @dead_rpcs before
+	 * they are freed, so homa_sock_destroy waits for this to reach zero.
+	 */
+	atomic_t reapers;
+
+	/**
 	 * @flags: Additional state information: an OR'ed combination of
 	 * various single-bit flags. See below for definitions. Must be
 	 * manipulated with test_bit etc. because some of the manipulations

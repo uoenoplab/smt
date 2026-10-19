@@ -219,6 +219,7 @@ int homa_sock_init(struct homa_sock *hsk)
 	hsk->error_msg = "no error";
 	spin_lock_init(&hsk->lock);
 	atomic_set(&hsk->protect_count, 0);
+	atomic_set(&hsk->reapers, 0);
 	INIT_LIST_HEAD(&hsk->active_rpcs);
 	INIT_LIST_HEAD(&hsk->dead_rpcs);
 	INIT_LIST_HEAD(&hsk->ready_rpcs);
@@ -439,6 +440,17 @@ void homa_sock_destroy(struct sock *sk)
 		homa_rpc_reap(hsk);
 #endif /* See strip.py */
 	}
+
+	/* Another thread (e.g. homa_timer) may have taken the last RPCs off
+	 * dead_rpcs and still be freeing them, which uses sk_wmem_alloc and
+	 * the buffer pool. Make any reap that starts from now on return
+	 * without touching the socket, then wait for the ones in progress.
+	 */
+	homa_sock_lock(hsk);
+	atomic_inc(&hsk->protect_count);
+	homa_sock_unlock(hsk);
+	while (atomic_read_acquire(&hsk->reapers) != 0)
+		cpu_relax();
 
 #ifdef CONFIG_SMT
 	smt_sock_destroy(hsk);

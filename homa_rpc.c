@@ -542,6 +542,7 @@ int homa_rpc_reap(struct homa_sock *hsk)
 		homa_sock_unlock(hsk);
 		return 0;
 	}
+	atomic_inc(&hsk->reapers);
 
 	/* Collect freeable RPCs. */
 	list_for_each_entry_safe(rpc, tmp, &hsk->dead_rpcs, dead_links) {
@@ -671,6 +672,10 @@ release:
 		   num_rpcs, hsk->dead_frags, hsk->port);
 	if (hsk->buffer_pool)
 		homa_pool_check_waiting(hsk->buffer_pool);
+
+	/* Pairs with atomic_read_acquire in homa_sock_destroy. */
+	smp_mb__before_atomic();
+	atomic_dec(&hsk->reapers);
 	return !checked_all_rpcs;
 }
 
