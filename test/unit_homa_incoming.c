@@ -179,7 +179,7 @@ TEST_F(homa_incoming, homa_message_in_init__zero_message_length)
 
 	self->data.msg_length = htonl(0);
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	ASSERT_TRUE(IS_ERR(srpc));
 	EXPECT_EQ(EINVAL, -PTR_ERR(srpc));
 }
@@ -189,7 +189,7 @@ TEST_F(homa_incoming, homa_message_in_init__message_too_long)
 
 	self->data.msg_length = htonl(HOMA_MAX_MESSAGE_LENGTH+1);
 	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip,
-				     &self->data.common);
+				     &self->data.common, NULL);
 	ASSERT_TRUE(IS_ERR(srpc));
 	EXPECT_EQ(EINVAL, -PTR_ERR(srpc));
 }
@@ -198,7 +198,7 @@ TEST_F(homa_incoming, homa_message_in_init__negative_message_length)
 	struct homa_rpc *srpc;
 
 	self->data.msg_length = htonl(-1);
-	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip, &self->data.common);
+	srpc = homa_rpc_alloc_server(&self->hsk, self->client_ip, &self->data.common, NULL);
 	ASSERT_TRUE(IS_ERR(srpc));
 	EXPECT_EQ(EINVAL, -PTR_ERR(srpc));
 }

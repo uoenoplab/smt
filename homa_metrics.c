@@ -432,6 +432,12 @@ char *homa_metrics_print(void)
 		  "Grant packets passed directly to homa_softirq by homa_gro_receive\n");
 		M("gro_data_bypasses", m->gro_data_bypasses,
 		  "Data packets passed directly to homa_softirq by homa_gro_receive\n");
+#ifdef CONFIG_SMT
+		M("smt_replay_drops", m->smt_replay_drops,
+		  "Packets dropped as replays of SMT requests\n");
+		M("smt_replay_too_old", m->smt_replay_too_old,
+		  "Packets dropped as SMT requests older than the replay window\n");
+#endif /* CONFIG_SMT */
 		for (i = 0; i < NUM_TEMP_METRICS;  i++) {
 			snprintf(name, sizeof(name), "temp%d", i);
 			M(name, m->temp[i], "Temporary use in testing\n");

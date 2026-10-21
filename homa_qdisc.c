@@ -750,11 +750,10 @@ void homa_qdisc_defer_homa(struct homa_qdisc_dev *qdev, struct sk_buff *skb)
 	homa_qdisc_lock_qdev(qdev);
 	__skb_queue_tail(&rpc->qrpc.packets, skb);
 	if (skb_queue_len(&rpc->qrpc.packets) == 1) {
-		struct homa_data_hdr *h;
 		int bytes_left;
 
-		h = (struct homa_data_hdr *)skb_transport_header(skb);
-		bytes_left = rpc->msgout.length - ntohl(h->seg.offset);
+		bytes_left = rpc->msgout.length -
+			     homa_get_skb_info(skb)->offset;
 		if (bytes_left < rpc->qrpc.tx_left)
 			rpc->qrpc.tx_left = bytes_left;
 		rpc->qrpc.qdev = qdev;
@@ -912,7 +911,6 @@ struct sk_buff *homa_qdisc_get_deferred_homa(struct homa_qdisc_dev *qdev)
 {
 	struct homa_rpc_qdisc *qrpc;
 	struct homa_skb_info *info;
-	struct homa_data_hdr *h;
 	struct homa_rpc *rpc;
 	struct rb_node *node;
 	struct sk_buff *skb;
@@ -949,9 +947,7 @@ struct sk_buff *homa_qdisc_get_deferred_homa(struct homa_qdisc_dev *qdev)
 	 * it's position won't change because it is already highest priority).
 	 */
 	info = homa_get_skb_info(skb);
-	h = (struct homa_data_hdr *)skb_transport_header(skb);
-	bytes_left = rpc->msgout.length - (ntohl(h->seg.offset) +
-					   info->data_bytes);
+	bytes_left = rpc->msgout.length - (info->offset + info->data_bytes);
 	if (bytes_left < qrpc->tx_left)
 		qrpc->tx_left = bytes_left;
 	if (fifo) {

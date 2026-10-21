@@ -12,6 +12,10 @@
 #include "homa_sock.h"
 #include "homa_wire.h"
 
+#ifdef CONFIG_SMT
+#include "smt_rpc.h"
+#endif
+
 /* Forward references. */
 struct homa_ack;
 
@@ -513,6 +517,10 @@ struct homa_rpc {
 	 * occasionally for testing.
 	 */
 	u64 start_time;
+
+#ifdef CONFIG_SMT
+	struct smt_rpc smt;
+#endif
 };
 
 void     homa_abort_rpcs(struct homa *homa, const struct in6_addr *addr,
@@ -528,7 +536,8 @@ struct homa_rpc
 struct homa_rpc
 	*homa_rpc_alloc_server(struct homa_sock *hsk,
 			       const struct in6_addr *source,
-			       struct homa_common_hdr *h);
+			       struct homa_common_hdr *h,
+			       struct sk_buff *skb);
 void     homa_rpc_end(struct homa_rpc *rpc);
 struct homa_rpc
 	*homa_rpc_find_client(struct homa_sock *hsk, u64 id);
