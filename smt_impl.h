@@ -97,6 +97,7 @@ enum {
 #define SMT_RX_ZC_NENTS(segs) (2 + 2 * (segs) + 2 * SMT_RX_ZC_MAX_PAGES)
 #endif
 
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 /* Message numbers (RPC id >> 1) a server remembers per peer. A peer's ids
  * come from a per-host counter, so the window spans that host's RPCs across
  * all its sockets: a request whose first packet arrives after more than
@@ -121,6 +122,7 @@ struct smt_replay_window {
 	u64 top;
 	DECLARE_BITMAP(seen, SMT_REPLAY_WINDOW);
 };
+#endif
 
 /* A socket's keys for one peer. The socket's table holds a reference, and
  * so does each RPC that uses them: SMT_KEY_DEL, a replacing key and
@@ -140,7 +142,9 @@ struct smt_context {
 	void *offload_tx;
 	void *offload_rx;
 
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 	struct smt_replay_window *replay;
+#endif
 
 	refcount_t refs;
 	/* jiffies when an RPC last let go of it (smt_ctx_gc). */
@@ -338,7 +342,9 @@ static inline const u8 *smt_rpc_tx_rec_seq(struct homa_rpc *rpc)
 
 /* smt_incoming.c */
 
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 void smt_replay_accept(struct homa_rpc *rpc);
+#endif
 
 /* Index of this packet within its GSO packet: GSO/TSO number the segments
  * of each packet from IP id 0 (see homa_gso_segment), and ip_select_ident

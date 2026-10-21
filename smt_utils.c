@@ -43,11 +43,13 @@ static inline struct hlist_head *smt_ctx_bucket(struct homa_sock *hsk,
 	return &SMT_SOCK(hsk)->ctx_buckets[bucket_id];
 }
 
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 static void smt_replay_put(struct smt_replay_window *w)
 {
 	if (w && refcount_dec_and_test(&w->refs))
 		kfree(w);
 }
+#endif
 
 static void smt_ctx_free(struct work_struct *work)
 {
@@ -58,7 +60,9 @@ static void smt_ctx_free(struct work_struct *work)
 		smt_sw_ctx_put(ctx->offload_tx);
 	if (ctx->rx_conf == SMT_SW)
 		smt_sw_ctx_put(ctx->offload_rx);
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 	smt_replay_put(ctx->replay);
+#endif
 	memzero_explicit(ctx, sizeof(*ctx));
 	kmem_cache_free(smt_ctx_kmem, ctx);
 }
@@ -85,6 +89,7 @@ static struct smt_context *smt_ctx_alloc(u32 peer_addr, u16 peer_port,
 
 	if (!ctx)
 		return NULL;
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 	ctx->replay = kzalloc(sizeof(*ctx->replay), gfp);
 	if (!ctx->replay) {
 		kmem_cache_free(smt_ctx_kmem, ctx);
@@ -92,6 +97,7 @@ static struct smt_context *smt_ctx_alloc(u32 peer_addr, u16 peer_port,
 	}
 	spin_lock_init(&ctx->replay->lock);
 	refcount_set(&ctx->replay->refs, 1);
+#endif
 	ctx->peer_addr = peer_addr;
 	ctx->peer_port = peer_port;
 	refcount_set(&ctx->refs, 1);
@@ -227,9 +233,11 @@ static void smt_ctx_carry(struct smt_context *nctx, struct smt_context *old,
 		nctx->crypto_recv = old->crypto_recv;
 		if (old->rx_conf == SMT_SW)
 			nctx->offload_rx = smt_sw_ctx_get(old->offload_rx);
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 		smt_replay_put(nctx->replay);
 		nctx->replay = old->replay;
 		refcount_inc(&nctx->replay->refs);
+#endif
 	} else {
 		nctx->tx_conf = old->tx_conf;
 		nctx->crypto_send = old->crypto_send;
