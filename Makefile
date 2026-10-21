@@ -14,8 +14,12 @@ HOMA_OBJS := homa_devel.o \
 	homa_utils.o \
 	timetrace.o
 
+SMT_OBJS := smt_sw.o
+
 ifneq ($(__STRIP__),)
 MY_CFLAGS += -D__STRIP__
+# A stripped build is plain Homa.
+override NO_CONFIG_SMT := 1
 else
 HOMA_OBJS += homa_grant.o \
 	homa_hijack.o \
@@ -41,15 +45,24 @@ LINUX_SRC_DIR ?= ../net-next
 ifneq ($(KERNELRELEASE),)
 
 obj-m += homa.o
+ifeq ($(NO_CONFIG_SMT),)
+homa-y = $(HOMA_OBJS) $(SMT_OBJS)
+override SMT_CFLAGS += -DCONFIG_SMT
+else
 homa-y = $(HOMA_OBJS)
+endif
 
 MY_CFLAGS += -g
-ccflags-y += $(MY_CFLAGS)
+ccflags-y += $(MY_CFLAGS) $(SMT_CFLAGS)
 
 else
 
 all:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) modules
+
+# SMT's log messages (smt_pr_devel, smt_pr_info).
+debug:
+	$(MAKE) -C $(KDIR) M=$(shell pwd) SMT_CFLAGS="-DCONFIG_SMT_DEBUG $(SMT_CFLAGS)" modules
 
 install:
 	$(MAKE) -C $(KDIR) M=$(shell pwd) modules_install

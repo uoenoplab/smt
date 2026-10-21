@@ -61,6 +61,8 @@
 #endif /* See strip.py */
 #include "homa_wire.h"
 
+#include "smt_plumbing_impl.h"
+
 #ifdef __UNIT_TEST__
 #include "mock.h"
 #endif /* __UNIT_TEST__ */
