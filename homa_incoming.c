@@ -532,7 +532,11 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 #ifdef CONFIG_SMT
 #ifndef CONFIG_SMT_NOCRYPTO
 			if (is_smt_rpc(rpc) && n > 0) {
-				int smt_err = smt_sw_decrypt(rpc, skbs, n);
+				bool delivered;
+				int smt_err = smt_sw_decrypt(rpc, skbs, n,
+							     rec_offset,
+							     rec_len,
+							     &delivered);
 
 				if (smt_err) {
 					int dump_i;
@@ -555,6 +559,9 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 					error = -EBADMSG;
 					goto free_skbs;
 				}
+				/* Nothing left for the copy below. */
+				if (delivered)
+					rec_copied = rec_len;
 		}
 #endif
 #endif

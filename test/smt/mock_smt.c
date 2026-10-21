@@ -99,7 +99,9 @@ int smt_sw_encrypt(struct homa_rpc *rpc, u32 rec,
 	return 0;
 }
 
-int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
+int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n,
+		   int rec_offset, int rec_len, bool *delivered)
 {
+	*delivered = false;
 	return 0;
 }

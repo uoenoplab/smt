@@ -80,6 +80,17 @@ enum {
 #define SMT_SEG_DATA(msd) \
 	((int)(msd) + (int)sizeof(struct homa_seg_hdr) - SMT_SEG_HDR)
 
+#ifdef CONFIG_SMT_RX_ZC
+/* User pages a zero-copy RX record may span, at most. */
+#define SMT_RX_ZC_MAX_PAGES (DIV_ROUND_UP(TLS_MAX_PAYLOAD_SIZE, PAGE_SIZE) + 4)
+
+/* Scatterlist entries for a zero-copy RX record of @segs segments: AAD, a
+ * seg_hdr and up to two data pieces per segment (one more where a page or
+ * a bpage ends), TLS 1.3's content type.
+ */
+#define SMT_RX_ZC_NENTS(segs) (2 + 2 * (segs) + 2 * SMT_RX_ZC_MAX_PAGES)
+#endif
+
 /* Message numbers (RPC id >> 1) a server remembers per peer. A peer's ids
  * come from a per-host counter, so the window spans that host's RPCs across
  * all its sockets: a request whose first packet arrives after more than
@@ -140,6 +151,17 @@ struct smt_sw_crypto {
 	/* AAD for one TX record; the sg list can't point at the stack. */
 	u8 aad[SMT_RECORD_PRE_MAX];
 	struct scatterlist crypt_sg[SMT_MAX_CRYPT_SG];
+#ifdef CONFIG_SMT_RX_ZC
+	/* Where smt_sw_decrypt writes a record that goes straight into the
+	 * user's buffers (smt_sw_rx_zc_sg): data to the pinned zc_pages,
+	 * TLS 1.3's content type to zc_type; zc_junk is the placeholder for
+	 * the AAD and seg_hdrs.
+	 */
+	struct scatterlist zc_sg[SMT_MAX_CRYPT_SG];
+	struct page *zc_pages[SMT_RX_ZC_MAX_PAGES];
+	u8 zc_junk[SMT_RECORD_PRE_MAX];
+	u8 zc_type;
+#endif
 	struct list_head list;
 };
 

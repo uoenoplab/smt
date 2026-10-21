@@ -69,7 +69,7 @@ void smt_tx_skb_hdr(struct homa_rpc *rpc, struct sk_buff *skb, u32 offset);
 /* smt_sw.c */
 
 extern int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs,
-			  int n);
+			  int n, int rec_offset, int rec_len, bool *delivered);
 
 /* smt_incoming.c */
 
