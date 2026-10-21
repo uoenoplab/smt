@@ -436,6 +436,13 @@ struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+	{
+		.procname	= "smt_record_segs",
+		.data		= OFFSET(smt_record_segs),
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= homa_dointvec
+	},
 #endif /* CONFIG_SMT */
 };
 #endif /* See strip.py */

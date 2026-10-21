@@ -34,7 +34,8 @@ CFLAGS :=    $(LINUX_CFLAGS) -fsanitize=address -include smt_test.h
 CCFLAGS :=   -std=c++11 $(WARNS) -MD -g -I. -I.. -I../.. $(DEFS) \
 		-fsanitize=address -fno-omit-frame-pointer
 
-TEST_SRCS := unit_smt_utils.c
+TEST_SRCS := unit_smt_outgoing.c \
+	     unit_smt_utils.c
 
 HOMA_SRCS := homa_devel.c \
 	     homa_grant.c \
@@ -55,7 +56,8 @@ HOMA_SRCS := homa_devel.c \
 	     homa_utils.c \
 	     timetrace.c
 
-SMT_SRCS :=  smt_plumbing.c \
+SMT_SRCS :=  smt_outgoing.c \
+	     smt_plumbing.c \
 	     smt_utils.c
 
 LINUX_OBJS := $(shell ../linux_objs $(KDIR)/include/generated/uapi/linux/version.h)

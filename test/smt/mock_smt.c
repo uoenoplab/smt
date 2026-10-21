@@ -86,3 +86,9 @@ int smt_sw_init_rpc(struct homa_rpc *rpc, int tx)
 {
 	return 0;
 }
+
+int smt_sw_encrypt(struct homa_rpc *rpc, u32 rec,
+		   const struct homa_frag_filler *pos, int payload_len)
+{
+	return 0;
+}

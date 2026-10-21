@@ -61,6 +61,18 @@ enum {
 
 #define SMT_MAX_CRYPT_SG 128
 
+/* Plaintext bytes each data segment of a record starts with: the
+ * homa_seg_hdr Homa puts there, which SMT's receiver never reads (it places
+ * segments by IP id and the record offset in pad).
+ */
+#define SMT_SEG_HDR ((int)sizeof(struct homa_seg_hdr))
+
+/* Data bytes in a full segment of a record, Homa's max_seg_data being @msd
+ * (GSO cuts the record every msd + sizeof(struct homa_seg_hdr) bytes).
+ */
+#define SMT_SEG_DATA(msd) \
+	((int)(msd) + (int)sizeof(struct homa_seg_hdr) - SMT_SEG_HDR)
+
 /* A socket's keys for one peer. The socket's table holds a reference, and
  * so does each RPC that uses them: a replacing key takes the ctx out of
  * the table, and the RPCs already using it finish with its keys.
@@ -147,6 +159,12 @@ static inline const u8 *smt_crypto_rec_seq(const union tls_crypto_context *c)
 				   c->aes_gcm_128.rec_seq;
 }
 
+/* Whether @rpc's records are TLS 1.3 (no explicit nonce) rather than 1.2. */
+static inline bool smt_rpc_tls13(struct homa_rpc *rpc)
+{
+	return SMT_RPC(rpc)->rec_pre == TLS_HEADER_SIZE;
+}
+
 /* Write the AEAD nonce of the record numbered @seq. TLS 1.2 uses
  * salt ‖ seq (the explicit nonce is the sequence number), TLS 1.3
  * (salt ‖ iv) XOR (0 ‖ seq): with @base = salt ‖ 0 for TLS 1.2 and
@@ -221,5 +239,15 @@ smt_sw_ctx_get(struct smt_sw_context *sw_ctx)
 	return sw_ctx;
 }
 int smt_sw_init_rpc(struct homa_rpc *rpc, int tx);
+
+struct homa_frag_filler;
+int smt_sw_encrypt(struct homa_rpc *rpc, u32 rec,
+		   const struct homa_frag_filler *pos, int payload_len);
+
+/* TLS sequence number of the message's first TX record. */
+static inline const u8 *smt_rpc_tx_rec_seq(struct homa_rpc *rpc)
+{
+	return smt_rpc_sw_tx(rpc)->rec_seq;
+}
 
 #endif /* _SMT_IMPL_H */

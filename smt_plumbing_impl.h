@@ -15,4 +15,9 @@
 #define SMT_RECORD_PRE_MAX 13
 #define SMT_RECORD_POST_MAX 17
 
+/* Most packets in one record (homa_copy_to_user decrypts a record from at
+ * most MAX_SKBS packets).
+ */
+#define SMT_MAX_RECORD_SEGS 20
+
 #endif /* _SMT_PLUMBING_IMPL_H */

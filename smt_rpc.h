@@ -31,6 +31,13 @@ struct smt_rpc {
 	 * TLS 1.3, the content type.
 	 */
 	u8 rec_post;
+	/**
+	 * @rec_segs: Segments in each full record of the outgoing message
+	 * (smt_tx_init); a GSO packet carries one or more whole records.
+	 */
+	u8 rec_segs;
+	/** @rec_data: Message bytes in each full outgoing record. */
+	int rec_data;
 
 	char smt_rpc_crypto_tx[40];
 	char smt_rpc_crypto_rx[40];

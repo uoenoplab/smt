@@ -496,6 +496,13 @@ struct homa {
 	 * per smt_context (capped by num_online_cpus()). Default 4.
 	 */
 	int smt_sw_pool_init;
+
+	/**
+	 * @smt_record_segs: Most segments in one outgoing record; 0
+	 * (default) means as many as a TLS record and SMT_MAX_RECORD_SEGS
+	 * allow. A GSO packet carries as many whole records as fit.
+	 */
+	int smt_record_segs;
 #endif /* CONFIG_SMT */
 };
 
