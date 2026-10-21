@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Check if the user input is provided and it is a number
+if [[ $# -eq 0 ]] || ! [[ $1 =~ ^[0-9]+$ ]]; then
+    echo "Usage: $0 <number_of_cores_to_keep_online>"
+    exit 1
+fi
+
+# Number of CPU cores to keep online
+NUM_CORES_TO_KEEP_ONLINE=$1
+
+# Dynamically get the total number of CPU cores, including offline ones
+TOTAL_CORES=$(ls /sys/devices/system/cpu/ | grep -c 'cpu[0-9]\+')
+
+# Loop through each CPU core and enable/disable accordingly, starting from CPU1
+for (( i=1; i<$TOTAL_CORES; i++ )); do
+    # If the current core index is less than the number of cores to keep online, ensure it's online
+    if [[ $i -lt $NUM_CORES_TO_KEEP_ONLINE ]]; then
+	echo "enable cpu$i"
+        echo 1 > /sys/devices/system/cpu/cpu$i/online
+    else
+	echo "disable cpu$i"
+        echo 0 > /sys/devices/system/cpu/cpu$i/online
+    fi
+done
