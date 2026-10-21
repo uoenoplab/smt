@@ -296,8 +296,131 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_SMT_RX_ALIGN
+/* Exchange the last moved[i] bytes of skb i's ciphertext with the moved[i]
+ * header bytes just before skb i+1's (smt_sw_decrypt picks moved[i] so that
+ * every skb's part of its sg ends on a 16-byte boundary of the ciphertext:
+ * x86 AES-GCM then steps from skb to skb instead of bouncing 16 bytes across
+ * each boundary). The headers were parsed in softirq and the regions don't
+ * overlap, so a second call puts every byte back.
+ */
+static void smt_sw_rx_swap(struct sk_buff **skbs, int n, const u8 *moved)
+{
+	int i, j;
+
+	for (i = 0; i + 1 < n && i < SMT_MAX_RECORD_SEGS; i++) {
+		u8 *a = skbs[i]->data + skbs[i]->len - moved[i];
+		u8 *b = skbs[i + 1]->data + SMT_SW_SGVEC_OFFSET - moved[i];
+
+		for (j = 0; j < moved[i]; j++)
+			swap(a[j], b[j]);
+	}
+}
+#endif
+
+#ifdef CONFIG_SMT_RX_ZC
+/* Smallest record decrypted straight into the user's buffers; for smaller
+ * ones pinning the pages costs more than the copy it saves.
+ */
+#define SMT_RX_ZC_MIN 4096
+
 /**
- * smt_sw_decrypt() - Decrypt an assembled record in place.
+ * smt_sw_rx_zc_sg() - Build crypto->zc_sg, the destination for decrypting
+ * a record straight into @rpc's buffers: the plaintext's data parts go to
+ * their place in the bpages, pinned into crypto->zc_pages, and its seg_hdrs
+ * and TLS 1.3 content type, like the AAD, to scratch.
+ * @rpc:         RPC receiving the record.
+ * @crypto:      Pool entry decrypting it.
+ * @rec_offset:  Message offset of the record's data.
+ * @rec_len:     Bytes of data in the record.
+ * @out_len:     Bytes of plaintext the record decrypts to.
+ * Return:       Number of pages pinned, or a negative errno with none.
+ */
+static int smt_sw_rx_zc_sg(struct homa_rpc *rpc, struct smt_sw_crypto *crypto,
+			   int rec_offset, int rec_len, int out_len)
+{
+	int msd = SMT_RPC(rpc)->smt_max_pkt_data, pre = SMT_RPC(rpc)->rec_pre;
+	int segs = DIV_ROUND_UP(rec_len + pre, SMT_SEG_DATA(msd));
+	int nents = min_t(int, SMT_RX_ZC_NENTS(segs), SMT_MAX_CRYPT_SG);
+	int offset = rec_offset, end = rec_offset + rec_len;
+	struct scatterlist *sg = crypto->zc_sg;
+	int npages = 0, nsg = 0, span_end = rec_offset, pg = 0;
+	unsigned long addr = 0;
+	int seg, rc;
+
+	/* The record must decrypt to the layout smt_tx_fill gives it. */
+	if (segs * SMT_SEG_HDR + rec_len +
+	    smt_rpc_tls13(rpc) != out_len || end > rpc->msgin.length)
+		return -EINVAL;
+
+	sg_init_table(sg, nents);
+	sg_set_buf(&sg[nsg++], crypto->zc_junk, pre);
+	for (seg = 0; seg < segs; seg++) {
+		int chunk = min(end - offset,
+				SMT_SEG_DATA(msd) - (seg ? 0 : pre));
+
+		if (SMT_SEG_HDR)
+			sg_set_buf(&sg[nsg++], crypto->zc_junk, SMT_SEG_HDR);
+		while (chunk > 0) {
+			int len;
+
+			/* Pin the bpage span at offset (addr's page is pg). */
+			if (offset == span_end) {
+				int avail, nr;
+
+				addr = (unsigned long)homa_pool_get_buffer(rpc,
+						offset, &avail);
+				avail = min(avail, end - offset);
+				nr = DIV_ROUND_UP((addr & ~PAGE_MASK) + avail,
+						  PAGE_SIZE);
+				if (npages + nr > SMT_RX_ZC_MAX_PAGES) {
+					rc = -E2BIG;
+					goto err;
+				}
+				rc = pin_user_pages_fast(addr & PAGE_MASK, nr,
+							 FOLL_WRITE,
+							 crypto->zc_pages + npages);
+				if (rc != nr) {
+					if (rc > 0)
+						unpin_user_pages(crypto->zc_pages +
+								 npages, rc);
+					rc = -EFAULT;
+					goto err;
+				}
+				pg = npages;
+				npages += nr;
+				span_end = offset + avail;
+			}
+			if (unlikely(nsg >= nents - 1)) {
+				rc = -E2BIG;
+				goto err;
+			}
+			len = min3(chunk, span_end - offset,
+				   (int)(PAGE_SIZE - (addr & ~PAGE_MASK)));
+			sg_set_page(&sg[nsg++], crypto->zc_pages[pg], len,
+				    addr & ~PAGE_MASK);
+			addr += len;
+			offset += len;
+			chunk -= len;
+			if (!(addr & ~PAGE_MASK))
+				pg++;
+		}
+	}
+	if (smt_rpc_tls13(rpc))
+		sg_set_buf(&sg[nsg++], &crypto->zc_type, 1);
+	sg_mark_end(&sg[nsg - 1]);
+	return npages;
+
+err:
+	unpin_user_pages(crypto->zc_pages, npages);
+	return rc;
+}
+#endif /* CONFIG_SMT_RX_ZC */
+
+/**
+ * smt_sw_decrypt() - Decrypt an assembled record, in place or, with
+ * CONFIG_SMT_RX_ZC and a large enough record, straight into the user's
+ * buffers.
  * @rpc:        SMT RPC.
  * @skbs:       Array of skbs that together form exactly one TLS record, in
  *              order. The first skb must be the first packet of the record
@@ -322,7 +445,15 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n,
 	u8 *smt_h, type = 0;
 	int i, nsg_total = 0, ret, crypt_len;
 	int total_sg_bytes = 0;
+#ifdef CONFIG_SMT_RX_ALIGN
+	/* Ciphertext in the sg so far, and what moves to the next skb. */
+	int stream = 0, carry = 0;
+	u8 moved[SMT_MAX_RECORD_SEGS] = {};
+#endif
 	struct scatterlist *dst;
+#ifdef CONFIG_SMT_RX_ZC
+	int zc_pages = -1;
+#endif
 
 	*delivered = false;
 
@@ -365,7 +496,27 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n,
 		 * to skb_to_sgvec_nomark.
 		 */
 		if (likely(skb_shinfo(skb)->nr_frags == 0)) {
+#ifdef CONFIG_SMT_RX_ALIGN
+			int own = len - (i ? 0 : pre);
+			int r = (stream + carry + own) % 16;
+
+			/* See smt_sw_rx_swap, which puts the previous skb's
+			 * carry bytes just before this skb's ciphertext.
+			 */
+			if (r && r <= own && i + 1 < n &&
+			    i < SMT_MAX_RECORD_SEGS &&
+			    !skb_shinfo(skbs[i + 1])->nr_frags &&
+			    skbs[i + 1]->len > offset)
+				moved[i] = r;
+			else
+				r = 0;
+			sg_set_buf(&sg[nsg_total], skb->data + offset - carry,
+				   len + carry - r);
+			stream += carry + own - r;
+			carry = r;
+#else
 			sg_set_buf(&sg[nsg_total], skb->data + offset, len);
+#endif
 			nsg = 1;
 		} else {
 			nsg = skb_to_sgvec_nomark(skb, &sg[nsg_total], offset,
@@ -376,6 +527,9 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n,
 				ret = nsg < 0 ? nsg : -EINVAL;
 				goto out;
 			}
+#ifdef CONFIG_SMT_RX_ALIGN
+			stream += len - (i ? 0 : pre);
+#endif
 		}
 		nsg_total += nsg;
 		total_sg_bytes += len;
@@ -414,11 +568,30 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n,
 	       TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
 
 	dst = sg;
+#ifdef CONFIG_SMT_RX_ZC
+	if (rec_len >= SMT_RX_ZC_MIN) {
+		zc_pages = smt_sw_rx_zc_sg(rpc, crypto, rec_offset, rec_len,
+					   crypt_len -
+					   TLS_CIPHER_AES_GCM_128_TAG_SIZE);
+		if (zc_pages >= 0)
+			dst = crypto->zc_sg;
+	}
+#endif
+#ifdef CONFIG_SMT_RX_ALIGN
+	smt_sw_rx_swap(skbs, n, moved);
+#endif
 	/* The AAD is the first pre bytes, smt_h's place, in both versions. */
 	ret = smt_sw_do_crypt(crypto, sg, dst, pre, crypt_len, iv, false);
 	/* TLS 1.3's content type, while sg still maps the plaintext. */
 	if (smt_rpc_tls13(rpc) && dst == sg)
 		scatterwalk_map_and_copy(&type, sg, total_sg_bytes - post, 1, 0);
+#ifdef CONFIG_SMT_RX_ALIGN
+	smt_sw_rx_swap(skbs, n, moved);
+#endif
+#ifdef CONFIG_SMT_RX_ZC
+	if (zc_pages >= 0)
+		unpin_user_pages_dirty_lock(crypto->zc_pages, zc_pages, true);
+#endif
 	if (unlikely(ret)) {
 		smt_pr_err("%s: decrypt failed %d rpc %lld n=%d crypt_len=%d total_sg_bytes=%d\n",
 			   __func__, ret, rpc->id, n, crypt_len,
@@ -468,6 +641,10 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n,
 	 * application data (SMT never pads).
 	 */
 	if (smt_rpc_tls13(rpc)) {
+#ifdef CONFIG_SMT_RX_ZC
+		if (dst != sg)
+			type = crypto->zc_type;
+#endif
 		if (unlikely(type != 0x17)) {
 			smt_pr_err("%s: rpc %lld record content type 0x%02x\n",
 				   __func__, rpc->id, type);
@@ -478,9 +655,11 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n,
 
 	smt_bigint_increment(r->rec_seq, sizeof(r->rec_seq));
 	*delivered = dst != sg;
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 	if (!homa_is_client(rpc->id) &&
 	    SMT_RX_INFO(skbs[0])->record_data_offset == 0)
 		smt_replay_accept(rpc);
+#endif
 	ret = 0;
 out:
 	smt_sw_push_crypto(sw_ctx, crypto);

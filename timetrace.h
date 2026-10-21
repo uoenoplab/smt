@@ -13,7 +13,9 @@ u64 mock_get_cycles(void);
 
 // Change 1 -> 0 in the following line to disable time tracing globally.
 // Used only in debugging.
+#ifndef ENABLE_TIME_TRACE
 #define ENABLE_TIME_TRACE 1
+#endif
 
 /* Timetrace implements a circular buffer of entries, each of which
  * consists of a fine-grain timestamp, a short descriptive string, and

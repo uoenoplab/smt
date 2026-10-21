@@ -70,9 +70,15 @@ enum {
 
 /* Plaintext bytes each data segment of a record starts with: the
  * homa_seg_hdr Homa puts there, which SMT's receiver never reads (it places
- * segments by IP id and the record offset in pad).
+ * segments by IP id and the record offset in pad). CONFIG_SMT_NO_SEG_HDR
+ * leaves it out, so a segment carries 4 more bytes of data; the two record
+ * layouts don't interoperate.
  */
+#ifdef CONFIG_SMT_NO_SEG_HDR
+#define SMT_SEG_HDR 0
+#else
 #define SMT_SEG_HDR ((int)sizeof(struct homa_seg_hdr))
+#endif
 
 /* Data bytes in a full segment of a record, Homa's max_seg_data being @msd
  * (GSO cuts the record every msd + sizeof(struct homa_seg_hdr) bytes).
@@ -80,6 +86,18 @@ enum {
 #define SMT_SEG_DATA(msd) \
 	((int)(msd) + (int)sizeof(struct homa_seg_hdr) - SMT_SEG_HDR)
 
+#ifdef CONFIG_SMT_RX_ZC
+/* User pages a zero-copy RX record may span, at most. */
+#define SMT_RX_ZC_MAX_PAGES (DIV_ROUND_UP(TLS_MAX_PAYLOAD_SIZE, PAGE_SIZE) + 4)
+
+/* Scatterlist entries for a zero-copy RX record of @segs segments: AAD, a
+ * seg_hdr and up to two data pieces per segment (one more where a page or
+ * a bpage ends), TLS 1.3's content type.
+ */
+#define SMT_RX_ZC_NENTS(segs) (2 + 2 * (segs) + 2 * SMT_RX_ZC_MAX_PAGES)
+#endif
+
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 /* Message numbers (RPC id >> 1) a server remembers per peer. A peer's ids
  * come from a per-host counter, so the window spans that host's RPCs across
  * all its sockets: a request whose first packet arrives after more than
@@ -101,6 +119,7 @@ struct smt_replay_window {
 	u64 top;
 	DECLARE_BITMAP(seen, SMT_REPLAY_WINDOW);
 };
+#endif
 
 struct smt_context {
 	u8 tx_conf : 3;
@@ -115,7 +134,9 @@ struct smt_context {
 	void *offload_tx;
 	void *offload_rx;
 
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 	struct smt_replay_window replay;
+#endif
 
 	struct hlist_node hlist;
 };
@@ -128,6 +149,17 @@ struct smt_sw_crypto {
 	/* AAD for one TX record; the sg list can't point at the stack. */
 	u8 aad[SMT_RECORD_PRE_MAX];
 	struct scatterlist crypt_sg[SMT_MAX_CRYPT_SG];
+#ifdef CONFIG_SMT_RX_ZC
+	/* Where smt_sw_decrypt writes a record that goes straight into the
+	 * user's buffers (smt_sw_rx_zc_sg): data to the pinned zc_pages,
+	 * TLS 1.3's content type to zc_type; zc_junk is the placeholder for
+	 * the AAD and seg_hdrs.
+	 */
+	struct scatterlist zc_sg[SMT_MAX_CRYPT_SG];
+	struct page *zc_pages[SMT_RX_ZC_MAX_PAGES];
+	u8 zc_junk[SMT_RECORD_PRE_MAX];
+	u8 zc_type;
+#endif
 	struct list_head list;
 };
 
@@ -295,7 +327,9 @@ static inline const u8 *smt_rpc_tx_rec_seq(struct homa_rpc *rpc)
 
 /* smt_incoming.c */
 
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 void smt_replay_accept(struct homa_rpc *rpc);
+#endif
 
 /* Index of this packet within its record: GSO/TSO number the segments of
  * each packet from IP id 0 (see homa_gso_segment), and ip_select_ident gives
