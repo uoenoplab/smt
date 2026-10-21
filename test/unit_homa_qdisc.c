@@ -46,6 +46,7 @@ static struct sk_buff *new_test_skb(struct homa_rpc *rpc,
 		unit_fill_data(skb_put(skb, length), length, 0);
 	info = homa_get_skb_info(skb);
 	info->data_bytes = length;
+	info->offset = offset;
 	qdisc_skb_cb(skb)->pkt_len = length + 100;
 	return skb;
 }
