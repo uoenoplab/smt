@@ -12,13 +12,15 @@
  * GSO cuts the payload every max_seg_data + sizeof(homa_seg_hdr) bytes, so
  * the first segment carries max_seg_data - rec_pre data bytes, and the
  * trailer spills into a final segment without a seg_hdr when the last one
- * has no room for it. A full record is rec_segs segments holding rec_data
- * message bytes; only the message's last record is shorter. The receiver
- * finds each segment's record from its IP id, rec_segs and the offset of
- * the packet's first record (smt_tx_skb_hdr). The payload of every record,
- * smt_h included, is laid out in rpc->msgout.frags when the message is
- * copied in from user space, and encrypted there for SW crypto, so a
- * retransmitted record is byte-identical to the original.
+ * has no room for it. With CONFIG_SMT_NO_SEG_HDR the frags carry no
+ * seg_hdrs, so every segment carries SMT_SEG_DATA(max_seg_data) bytes of
+ * the record. A full record is rec_segs segments holding rec_data message
+ * bytes; only the message's last record is shorter. The receiver finds each
+ * segment's record from its IP id, rec_segs and the offset of the packet's
+ * first record (smt_tx_skb_hdr). The payload of every record, smt_h
+ * included, is laid out in rpc->msgout.frags when the message is copied in
+ * from user space, and encrypted there for SW crypto, so a retransmitted
+ * record is byte-identical to the original.
  */
 
 #include <linux/unaligned.h>

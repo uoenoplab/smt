@@ -70,9 +70,15 @@ enum {
 
 /* Plaintext bytes each data segment of a record starts with: the
  * homa_seg_hdr Homa puts there, which SMT's receiver never reads (it places
- * segments by IP id and the record offset in pad).
+ * segments by IP id and the record offset in pad). CONFIG_SMT_NO_SEG_HDR
+ * leaves it out, so a segment carries 4 more bytes of data; the two record
+ * layouts don't interoperate.
  */
+#ifdef CONFIG_SMT_NO_SEG_HDR
+#define SMT_SEG_HDR 0
+#else
 #define SMT_SEG_HDR ((int)sizeof(struct homa_seg_hdr))
+#endif
 
 /* Data bytes in a full segment of a record, Homa's max_seg_data being @msd
  * (GSO cuts the record every msd + sizeof(struct homa_seg_hdr) bytes).
