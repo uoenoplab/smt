@@ -15,6 +15,10 @@
 #include "homa_qdisc.h"
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
+#include "smt_plumbing.h"
+#endif
+
 /**
  * homa_message_out_init() - Initialize rpc->msgout. This function doesn't
  * read data from user space or create sk_buffs, but it sets up information
@@ -68,6 +72,10 @@ int homa_message_out_init(struct homa_rpc *rpc, int length)
 		max_segs = 1;
 	rpc->msgout.max_gso_segs = max_segs;
 	rpc->msgout.max_gso_data = max_segs * rpc->msgout.max_seg_data;
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc))
+		smt_tx_init(rpc);
+#endif
 
 done:
 	rcu_read_unlock();
@@ -90,7 +98,7 @@ int homa_tx_copy_from_user(struct homa_rpc *rpc, struct iov_iter *iter,
 	__must_hold(rpc->bucket->lock)
 {
 	struct homa_frag_filler filler;
-	int err, hdr_space;
+	int err, hdr_space, frag_bytes;
 	u64 num_segs;
 	int offset;
 	int nid;
@@ -101,13 +109,18 @@ int homa_tx_copy_from_user(struct homa_rpc *rpc, struct iov_iter *iter,
 	num_segs = rpc->msgout.length + rpc->msgout.max_seg_data - 1;
 	do_div(num_segs, rpc->msgout.max_seg_data);
 	hdr_space = num_segs * sizeof(struct homa_seg_hdr);
+	frag_bytes = rpc->msgout.length + hdr_space;
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc))
+		frag_bytes = smt_tx_frag_bytes(rpc);
+#endif
 	rpc->msgout.frags = &rpc->msgout.frag;
 	rpc->msgout.num_frags = 1;
-	nid = homa_tx_pool_alloc(rpc->hsk->homa, rpc->msgout.length + hdr_space,
+	nid = homa_tx_pool_alloc(rpc->hsk->homa, frag_bytes,
 				 &rpc->msgout.num_frags, &rpc->msgout.frags);
 	if (nid < 0)
 		return nid;
-	rpc->msgout.frag_bytes = rpc->msgout.length + hdr_space;
+	rpc->msgout.frag_bytes = frag_bytes;
 	rpc->msgout.frag_nid = nid;
 	refcount_add(rpc->msgout.frag_bytes, &rpc->hsk->sock.sk_wmem_alloc);
 
@@ -125,6 +138,13 @@ int homa_tx_copy_from_user(struct homa_rpc *rpc, struct iov_iter *iter,
 	homa_frag_filler_init(&filler, rpc->msgout.num_frags,
 			      rpc->msgout.frags);
 	offset = 0;
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc)) {
+		err = smt_tx_fill(rpc, &filler, iter, xmit);
+		if (unlikely(err != 0))
+			goto done;
+	} else
+#endif
 	while (offset < rpc->msgout.length) {
 		int seg_size = min(rpc->msgout.length - offset,
 				   rpc->msgout.max_seg_data);
@@ -223,6 +243,14 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 	if (*end > rpc->msgout.length)
 		*end = rpc->msgout.length;
 
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc)) {
+		bytes_to_skip = smt_tx_skb_range(rpc, &offset, end, &bytes_left,
+						 &num_segs);
+		goto find_frag;
+	}
+#endif
+
 	/* Find the location within rpc->msgin.frags of the data for the
 	 * first segment to output (skipping its homa_seg_hdr, since that
 	 * will be in the linear part of the skb). Also, round offset down
@@ -234,12 +262,6 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 	bytes_to_skip = seg_index * (rpc->msgout.max_seg_data +
 				     sizeof(struct homa_seg_hdr)) +
 			sizeof(struct homa_seg_hdr);
-	for (msg_frags_left = rpc->msgout.num_frags,
-	     msg_frag = rpc->msgout.frags; ; msg_frags_left--, msg_frag++) {
-		if (bytes_to_skip < skb_frag_size(msg_frag))
-			break;
-		bytes_to_skip -= skb_frag_size(msg_frag);
-	}
 
 	/* Compute how much data from rpc->msgout.frags to include in the
 	 * packet.
@@ -252,7 +274,17 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 				 sizeof(struct homa_seg_hdr)) -
 		     sizeof(struct homa_seg_hdr);
 
-	skb = __homa_skb_alloc(sizeof(struct homa_data_hdr));
+#ifdef CONFIG_SMT
+find_frag:
+#endif
+	for (msg_frags_left = rpc->msgout.num_frags,
+	     msg_frag = rpc->msgout.frags; ; msg_frags_left--, msg_frag++) {
+		if (bytes_to_skip < skb_frag_size(msg_frag))
+			break;
+		bytes_to_skip -= skb_frag_size(msg_frag);
+	}
+
+	skb = __homa_skb_alloc(sizeof(struct homa_data_hdr) + SMT_SKB_LINEAR_EXTRA);
 	if (unlikely(!skb))
 		return ERR_PTR(-ENOMEM);
 	skb->ooo_okay = 1;
@@ -276,6 +308,10 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 	if (offset < rpc->msgout.next_xmit_offset)
 		h->retransmit = 1;
 	h->seg.offset = htonl(offset);
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc))
+		smt_tx_skb_hdr(rpc, skb, offset);
+#endif
 
 	/* Virtually copy data from rpc->msgout.frags to the skb; each
 	 * iteration of the following loop copies one frag.
@@ -308,6 +344,13 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 
 	if (bytes_left > 0 && msg_frags_left > 0 &&
 	    shinfo->nr_frags >= MAX_SKB_FRAGS) {
+#ifdef CONFIG_SMT
+		/* A TLS record can't be split across packets. */
+		if (is_smt_rpc(rpc)) {
+			err = -EINVAL;
+			goto error;
+		}
+#endif
 		/* There wasn't enough fragment space in skb to store all the
 		 * desired segments. Round the skb back to the nearest segment
 		 * boundary.
@@ -334,6 +377,9 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 			shinfo->nr_frags--;
 		}
 	}
+#ifdef CONFIG_SMT
+	if (!is_smt_rpc(rpc))
+#endif
 	*end = min_t(u32, offset + num_segs * rpc->msgout.max_seg_data,
 		     rpc->msgout.length);
 
@@ -363,6 +409,7 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 	homa_info = homa_get_skb_info(skb);
 	memset(homa_info, 0, sizeof(*homa_info));
 	homa_info->data_bytes = *end - offset;
+	homa_info->offset = offset;
 	homa_info->dont_defer = false;
 	return skb;
 

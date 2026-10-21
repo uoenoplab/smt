@@ -227,7 +227,11 @@ struct sk_buff *homa_gro_receive(struct list_head *held_list,
 		tt_record4("homa_gro_receive got packet from 0x%x id %llu, offset %d, priority %d",
 			   saddr, homa_local_id(h_new->common.sender_id),
 			   ntohl(h_new->seg.offset), priority);
+#ifdef CONFIG_SMT
+		if (homa_data_len(skb) >= ntohl(h_new->msg_length) &&
+#else
 		if (homa_data_len(skb) == ntohl(h_new->msg_length) &&
+#endif
 		    (homa->gro_policy & HOMA_GRO_SHORT_BYPASS) &&
 		    !busy) {
 			INC_METRIC(gro_data_bypasses, 1);

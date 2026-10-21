@@ -61,6 +61,8 @@
 #endif /* See strip.py */
 #include "homa_wire.h"
 
+#include "smt_plumbing_impl.h"
+
 #ifdef __UNIT_TEST__
 #include "mock.h"
 #endif /* __UNIT_TEST__ */
@@ -486,6 +488,23 @@ struct homa {
 	 */
 	int temp[4];
 #endif /* See strip.py */
+
+#ifdef CONFIG_SMT
+	/**
+	 * @smt_sw_pool_init: max # of crypto pool entries pre-allocated
+	 * per smt_context (capped by num_online_cpus()). Default 4.
+	 */
+	int smt_sw_pool_init;
+
+	/**
+	 * @smt_fixed_key: 12 or 13 gives every new socket a built-in
+	 * AES-GCM-128 key for all peers, with TLS 1.2 or 1.3 records, so no
+	 * handshake is needed (for measurements: the key is in the source).
+	 * 0 (default): keys come only from setsockopt(SOL_TLS), e.g. after a
+	 * handshake.
+	 */
+	int smt_fixed_key;
+#endif /* CONFIG_SMT */
 };
 
 /**
@@ -520,6 +539,12 @@ struct homa_skb_info {
 	 * segments in this packet.
 	 */
 	int data_bytes;
+
+	/**
+	 * @offset: offset within the message of the first byte of data in
+	 * this packet.
+	 */
+	u32 offset;
 
 	/**
 	 * @dont_defer: True means that homa_qdisc_enqueue should pass this

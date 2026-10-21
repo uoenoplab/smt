@@ -15,6 +15,10 @@
 #include "homa_qdisc.h"
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
+#include "smt_plumbing.h"
+#endif
+
 /* Identifier for retrieving Homa-specific data for a struct net. */
 unsigned int homa_net_id;
 
@@ -244,6 +248,7 @@ struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#ifndef CONFIG_SMT
 	{
 		.procname	= "hijack_tcp",
 		.data		= OFFSET(hijack_tcp),
@@ -251,6 +256,7 @@ struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#endif
 	{
 		.procname	= "link_mbps",
 		.data		= OFFSET(link_mbps),
@@ -391,13 +397,33 @@ struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#ifdef CONFIG_SMT
+	{
+		.procname	= "smt_sw_pool_init",
+		.data		= OFFSET(smt_sw_pool_init),
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= homa_dointvec
+	},
+	{
+		.procname	= "smt_fixed_key",
+		.data		= OFFSET(smt_fixed_key),
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= homa_dointvec
+	},
+#endif /* CONFIG_SMT */
 };
 #endif /* See strip.py */
 
 /* Sizes of the headers for each Homa packet type, in bytes. */
 #ifndef __STRIP__ /* See strip.py */
 static u16 header_lengths[] = {
+#ifdef CONFIG_SMT
+	sizeof(struct homa_data_hdr) - sizeof(struct homa_seg_hdr), // to allow trailer only
+#else
 	sizeof(struct homa_data_hdr),
+#endif
 	sizeof(struct homa_grant_hdr),
 	sizeof(struct homa_resend_hdr),
 	sizeof(struct homa_rpc_unknown_hdr),
@@ -614,6 +640,14 @@ int __init homa_load(void)
 	init_qdisc = true;
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
+	status = smt_load(homa);
+	if (status != 0) {
+		printk(KERN_ERR "Homa couldn't init smt\n");
+		goto error;
+	}
+#endif
+
 	timer_kthread = kthread_run(homa_timer_main, homa, "homa_timer");
 	if (IS_ERR(timer_kthread)) {
 		status = PTR_ERR(timer_kthread);
@@ -624,7 +658,9 @@ int __init homa_load(void)
 	}
 
 #ifndef __STRIP__ /* See strip.py */
+#ifndef CONFIG_SMT
 	homa_hijack_init();
+#endif
 #endif /* See strip.py */
 #ifndef __UPSTREAM__ /* See strip.py */
 	tt_set_temp(homa->temp);
@@ -679,8 +715,14 @@ void __exit homa_unload(void)
 
 	pr_notice("Homa module unloading\n");
 
+#ifdef CONFIG_SMT
+	smt_unload();
+#endif
+
 #ifndef __STRIP__ /* See strip.py */
+#ifndef CONFIG_SMT
 	homa_hijack_end();
+#endif
 #endif /* See strip.py */
 	if (timer_kthread)
 		kthread_stop(timer_kthread);
@@ -1024,6 +1066,11 @@ int homa_setsockopt(struct sock *sk, int level, int optname,
 {
 	struct homa_sock *hsk = homa_sk(sk);
 	int ret;
+
+#ifdef CONFIG_SMT
+	if (level == SOL_TLS)
+		return smt_setsockopt(sk, level, optname, optval, optlen);
+#endif
 
 	if (level != IPPROTO_HOMA) {
 		hsk->error_msg = "homa_setsockopt invoked with level not IPPROTO_HOMA";

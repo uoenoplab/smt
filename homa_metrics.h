@@ -800,6 +800,20 @@ struct homa_metrics {
 	 */
 	u64 gro_data_bypasses;
 
+#ifdef CONFIG_SMT
+	/**
+	 * @smt_replay_drops: packets dropped because they would have created
+	 * a server RPC for a request that was already authenticated.
+	 */
+	u64 smt_replay_drops;
+
+	/**
+	 * @smt_replay_too_old: packets dropped because they would have created
+	 * a server RPC for a request older than the replay window.
+	 */
+	u64 smt_replay_too_old;
+#endif /* CONFIG_SMT */
+
 	/** @temp: For temporary use during testing. */
 #define NUM_TEMP_METRICS 10
 	u64 temp[NUM_TEMP_METRICS];

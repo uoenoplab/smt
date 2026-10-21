@@ -339,6 +339,11 @@ struct homa_sock {
 	 * the socket lock.
 	 */
 	struct homa_rpc_bucket server_rpc_buckets[HOMA_SERVER_RPC_BUCKETS];
+
+#ifdef CONFIG_SMT
+	/** @smt: SMT's keys for this socket (struct smt_sock), or NULL. */
+	void *smt;
+#endif
 };
 
 /**

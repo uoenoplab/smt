@@ -19,6 +19,11 @@
 #endif /* See strip.py */
 
 #ifndef __STRIP__ /* See strip.py */
+
+#ifdef CONFIG_SMT
+#include "smt_plumbing.h"
+#endif
+
 /**
  * homa_message_in_init() - Constructor for homa_message_in.
  * @rpc:          RPC whose msgin structure should be initialized.
@@ -214,6 +219,24 @@ enum skb_drop_reason homa_add_packet(struct homa_rpc *rpc, struct sk_buff *skb)
 	enum skb_drop_reason reason = 0;
 	u32 end = start + length;
 
+#ifdef CONFIG_SMT
+#ifndef __STRIP__ /* See strip.py */
+	if (is_smt_rpc(rpc)) {
+		struct smt_rx_logical_info *info;
+
+		*SMT_RX_INFO(skb) = smt_calc_rx_logical_info(rpc, skb);
+		info = SMT_RX_INFO(skb);
+
+		start = info->start;
+		length = info->length;
+		end = info->end;
+		smt_pr_devel("%s (smt): id %lld, start %d, length %d, end %d\n",
+		       __func__, rpc->id, start, length, end);
+		tt_record4("smt_rx id %d start %d len %d end %d", rpc->id, start, length, end);
+	}
+#endif /* See strip.py */
+#endif
+
 	if (start >= rpc->msgin.length ||
 	    length > (rpc->msgin.length - start)) {
 		tt_record3("Packet extended past message end; id %d, offset %d, length %d",
@@ -320,6 +343,27 @@ ignore:
 	return reason;
 
 keep:
+#ifdef CONFIG_SMT
+	if (is_smt_rpc(rpc)) {
+		/* SMT needs packets sorted by offset for the peek-walk in
+		 * copy_to_user. Walk backwards since packets usually arrive
+		 * roughly in order.
+		 */
+		struct sk_buff *pos;
+		bool inserted = false;
+
+		skb_queue_reverse_walk(&rpc->msgin.packets, pos) {
+			int pos_start = SMT_RX_INFO(pos)->start;
+			if (pos_start <= start) {
+				__skb_queue_after(&rpc->msgin.packets, pos, skb);
+				inserted = true;
+				break;
+			}
+		}
+		if (!inserted)
+			__skb_queue_head(&rpc->msgin.packets, skb);
+	} else
+#endif
 	__skb_queue_tail(&rpc->msgin.packets, skb);
 	skb_get(skb);
 	rpc->msgin.bytes_remaining -= length;
@@ -358,6 +402,9 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 #else /* __UNIT_TEST__ */
 #define MAX_SKBS 20
 #endif /* __UNIT_TEST__ */
+#ifdef CONFIG_SMT
+	BUILD_BUG_ON(SMT_MAX_RECORD_SEGS > MAX_SKBS);
+#endif
 	struct sk_buff *skbs[MAX_SKBS];
 	int error = 0;
 	int n = 0;             /* Number of filled entries in skbs. */
@@ -381,21 +428,99 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 	while (true) {
 		struct sk_buff *skb;
 
+#ifdef CONFIG_SMT
+		int rec_len = 0;
+		int rec_offset = 0;
+		int rec_copied = 0;
+#endif
+
 		if (rpc->state == RPC_DEAD) {
 			error = -EINVAL;
 			break;
 		}
 
-		skb = __skb_dequeue(&rpc->msgin.packets);
-		if (skb) {
-			skbs[n] = skb;
-			n++;
-			if (n < MAX_SKBS)
-				continue;
-		}
-		if (n == 0) {
-			clear_bit(RPC_PKTS_READY, &rpc->flags);
-			break;
+#ifdef CONFIG_SMT
+		/* For SMT RPCs, dequeue packets per-record to correctly
+		 * handle the trailer (authtag) at the end of each record.
+		 */
+		if (is_smt_rpc(rpc)) {
+			struct sk_buff *first_skb;
+			struct smt_rx_logical_info *first_info;
+			int rec_avail = 0;
+			int seg_end = 0;
+			int count = 0;
+
+			first_skb = skb_peek(&rpc->msgin.packets);
+			if (!first_skb) {
+				smt_pr_devel("%s: rpc %lld queue empty\n",
+					     __func__, rpc->id);
+				clear_bit(RPC_PKTS_READY, &rpc->flags);
+				break;
+			}
+
+			first_info = SMT_RX_INFO(first_skb);
+
+			if (first_info->record_data_offset == -1) {
+				clear_bit(RPC_PKTS_READY, &rpc->flags);
+				break;
+			}
+
+			if (first_info->record_data_offset > SMT_RPC(rpc)->decrypt_offset) {
+				clear_bit(RPC_PKTS_READY, &rpc->flags);
+				break;
+			}
+
+			rec_len = first_info->record_data_len;
+			rec_offset = first_info->record_data_offset;
+			rec_copied = 0;
+
+			/* Peek-walk: verify all contiguous packets for
+			 * this record are queued before dequeuing.
+			 */
+			count = 0;
+			rec_avail = 0;
+			seg_end = rec_offset;
+			skb_queue_walk(&rpc->msgin.packets, skb) {
+				struct smt_rx_logical_info *info = SMT_RX_INFO(skb);
+
+				if (info->start != seg_end) {
+					break;
+				}
+				rec_avail += info->length;
+				seg_end = info->end;
+				count++;
+				if (rec_avail >= rec_len)
+					break;
+			}
+			if (rec_avail < rec_len) {
+				clear_bit(RPC_PKTS_READY, &rpc->flags);
+				break;
+			}
+			if (count > MAX_SKBS) {
+				smt_pr_err("%s: rpc %lld record needs %d pkts, MAX_SKBS=%d\n",
+					   __func__, rpc->id, count,
+					   MAX_SKBS);
+				error = -EINVAL;
+				break;
+			}
+			for (i = 0; i < count; i++)
+				skbs[n++] = __skb_dequeue(&rpc->msgin.packets);
+			SMT_RPC(rpc)->decrypt_offset = rec_offset + rec_len;
+		} else
+#endif
+		{
+			/* Standard Homa: batch packets regardless of record */
+			skb = __skb_dequeue(&rpc->msgin.packets);
+			if (skb) {
+				skbs[n] = skb;
+				n++;
+				if (n < MAX_SKBS)
+					continue;
+			}
+			if (n == 0) {
+				clear_bit(RPC_PKTS_READY, &rpc->flags);
+				break;
+			}
 		}
 
 		/* At this point we've collected a batch of packets (or
@@ -404,20 +529,85 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 		 */
 		homa_rpc_unlock(rpc);
 
+#ifdef CONFIG_SMT
+#ifndef CONFIG_SMT_NOCRYPTO
+			if (is_smt_rpc(rpc) && n > 0) {
+				bool delivered;
+				int smt_err = smt_sw_decrypt(rpc, skbs, n,
+							     rec_offset,
+							     rec_len,
+							     &delivered);
+
+				if (smt_err) {
+					int dump_i;
+
+					smt_pr_err("smt_sw_decrypt failed %d id %lld n=%d record_len=%d record_offset=%d copied=%d\n",
+						   smt_err, rpc->id, n,
+						   rec_len,
+						   rec_offset,
+						   rec_copied);
+					for (dump_i = 0; dump_i < n; dump_i++) {
+						struct sk_buff *dump_skb = skbs[dump_i];
+						struct smt_rx_logical_info *info =
+							SMT_RX_INFO(dump_skb);
+
+						smt_pr_err("skbs[%d]: skb=%px len=%u start=%d length=%d end=%d record_len=%d\n",
+						       dump_i, dump_skb, dump_skb->len,
+						       info->start, info->length,
+						       info->end, info->record_data_len);
+					}
+					error = -EBADMSG;
+					goto free_skbs;
+				}
+				/* Nothing left for the copy below. */
+				if (delivered)
+					rec_copied = rec_len;
+		}
+#endif
+#endif
+
 		tt_record1("starting copy to user space for id %d",
 			   rpc->id);
-
 		/* Each iteration of this loop copies out one skb. */
 		for (i = 0; i < n; i++) {
 			struct homa_data_hdr *h = (struct homa_data_hdr *)
 					skbs[i]->data;
 			int pkt_length = homa_data_len(skbs[i]);
 			u32 offset = ntohl(h->seg.offset);
+			int data_offset = sizeof(*h);
 			int buf_bytes, chunk_size;
 			struct iov_iter iter;
 			int copied = 0;
 			char __user *dst;
 
+#ifdef CONFIG_SMT
+			if (is_smt_rpc(rpc)) {
+				int skb_data_len;
+
+				data_offset = smt_data_offset(rpc, skbs[i]);
+				skb_data_len = skbs[i]->len -
+					       skb_transport_offset(skbs[i]) -
+					       data_offset;
+
+				/* Calculate how much data to copy from this packet */
+				pkt_length = rec_len - rec_copied;
+				if (pkt_length > skb_data_len)
+					pkt_length = skb_data_len;
+
+				offset = rec_offset + rec_copied;
+
+				/* Clamp to message length */
+				if (offset >= rpc->msgin.length) {
+					pkt_length = 0;
+				} else if (offset + pkt_length > rpc->msgin.length) {
+					pkt_length = rpc->msgin.length - offset;
+				}
+
+				if (pkt_length <= 0)
+					continue;
+
+				}
+#endif
 #ifndef __UPSTREAM__ /* See strip.py */
 			if (end_offset == 0) {
 				start_offset = offset;
@@ -449,18 +639,21 @@ int homa_copy_to_user(struct homa_rpc *rpc)
 				if (error)
 					goto free_skbs;
 				error = skb_copy_datagram_iter(skbs[i],
-							       sizeof(*h) +
+							       data_offset +
 							       copied,  &iter,
 							       chunk_size);
 				if (error)
 					goto free_skbs;
 				copied += chunk_size;
 			}
+#ifdef CONFIG_SMT
+			if (is_smt_rpc(rpc))
+				rec_copied += copied;
+#endif
 #ifndef __UPSTREAM__ /* See strip.py */
 			end_offset = offset + pkt_length;
 #endif /* See strip.py */
 		}
-
 free_skbs:
 #ifndef __UPSTREAM__ /* See strip.py */
 		if (end_offset != 0) {
@@ -571,7 +764,7 @@ void homa_dispatch_pkts(struct sk_buff *skb)
 					 * already exist.
 					 */
 					rpc = homa_rpc_alloc_server(hsk, &saddr,
-								    h);
+								    h, skb);
 					if (IS_ERR(rpc)) {
 						INC_METRIC(server_cant_create_rpcs, 1);
 						rpc = NULL;
@@ -789,8 +982,19 @@ void homa_data_pkt(struct sk_buff *skb, struct homa_rpc *rpc)
 
 	if (skb_queue_len(&rpc->msgin.packets) != 0 &&
 	    !test_bit(RPC_PKTS_READY, &rpc->flags)) {
-		set_bit(RPC_PKTS_READY, &rpc->flags);
-		homa_rpc_handoff(rpc);
+#ifdef CONFIG_SMT
+		if (is_smt_rpc(rpc)) {
+			if (smt_record_complete(rpc, skb)) {
+				smt_pr_devel("smt handoff\n");
+				set_bit(RPC_PKTS_READY, &rpc->flags);
+				homa_rpc_handoff(rpc);
+			}
+		} else
+#endif
+		{
+			set_bit(RPC_PKTS_READY, &rpc->flags);
+			homa_rpc_handoff(rpc);
+		}
 	}
 
 handle_ack:
