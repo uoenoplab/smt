@@ -115,3 +115,29 @@ void smt_sw_ctx_put(struct smt_sw_context *sw_ctx)
 	}
 	kfree(sw_ctx);
 }
+
+/* Initialize per-RPC rec_seq and nonce base (see smt_nonce) from the
+ * context's crypto_info. The crypto tfm is borrowed lazily on first
+ * encrypt/decrypt call.
+ */
+int smt_sw_init_rpc(struct homa_rpc *rpc, int tx)
+{
+	struct smt_context *ctx = SMT_RPC(rpc)->ctx;
+	union tls_crypto_context *info = tx ? &ctx->crypto_send :
+					      &ctx->crypto_recv;
+	struct smt_rpc_sw_context *r =
+		tx ? smt_rpc_sw_tx(rpc) : smt_rpc_sw_rx(rpc);
+
+	BUILD_BUG_ON(sizeof(struct smt_rpc_sw_context) >
+		     sizeof(((struct smt_rpc *)0)->smt_rpc_crypto_tx));
+
+	smt_rpc_init_rec_seq(rpc, tx, r->rec_seq);
+	memcpy(r->iv, smt_crypto_salt(info), TLS_CIPHER_AES_GCM_128_SALT_SIZE);
+	if (info->info.version == TLS_1_3_VERSION)
+		memcpy(r->iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE,
+		       smt_crypto_iv(info), TLS_CIPHER_AES_GCM_128_IV_SIZE);
+	else
+		memset(r->iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, 0,
+		       TLS_CIPHER_AES_GCM_128_IV_SIZE);
+	return 0;
+}

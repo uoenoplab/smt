@@ -14,7 +14,9 @@ HOMA_OBJS := homa_devel.o \
 	homa_utils.o \
 	timetrace.o
 
-SMT_OBJS := smt_sw.o
+SMT_OBJS := smt_plumbing.o \
+	smt_sw.o \
+	smt_utils.o
 
 ifneq ($(__STRIP__),)
 MY_CFLAGS += -D__STRIP__

@@ -489,6 +489,14 @@ struct homa {
 	 */
 	int temp[4];
 #endif /* See strip.py */
+
+#ifdef CONFIG_SMT
+	/**
+	 * @smt_sw_pool_init: max # of crypto pool entries pre-allocated
+	 * per smt_context (capped by num_online_cpus()). Default 4.
+	 */
+	int smt_sw_pool_init;
+#endif /* CONFIG_SMT */
 };
 
 /**

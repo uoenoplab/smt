@@ -61,6 +61,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cd test && ./unit --ipv4
 
+      # SMT's own tests: Homa built with CONFIG_SMT, in test/smt.
+      - name: SMT unit tests
+        if: ${{ !cancelled() }}
+        run: make -C test/smt -j$(nproc) unit && cd test/smt && ./unit
+
       # checkpatch the change of a pull request or push (see the script):
       # the module sources as they are, then the files that go upstream.
       - name: checkpatch

@@ -15,6 +15,10 @@
 #include "homa_qdisc.h"
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
+#include "smt_plumbing.h"
+#endif
+
 /* Identifier for retrieving Homa-specific data for a struct net. */
 unsigned int homa_net_id;
 
@@ -424,6 +428,15 @@ struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#ifdef CONFIG_SMT
+	{
+		.procname	= "smt_sw_pool_init",
+		.data		= OFFSET(smt_sw_pool_init),
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= homa_dointvec
+	},
+#endif /* CONFIG_SMT */
 };
 #endif /* See strip.py */
 
@@ -647,6 +660,14 @@ int __init homa_load(void)
 	init_qdisc = true;
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
+	status = smt_load(homa);
+	if (status != 0) {
+		printk(KERN_ERR "Homa couldn't init smt\n");
+		goto error;
+	}
+#endif
+
 	timer_kthread = kthread_run(homa_timer_main, homa, "homa_timer");
 	if (IS_ERR(timer_kthread)) {
 		status = PTR_ERR(timer_kthread);
@@ -713,6 +734,10 @@ void __exit homa_unload(void)
 	struct homa *homa = &homa_data;
 
 	pr_notice("Homa module unloading\n");
+
+#ifdef CONFIG_SMT
+	smt_unload();
+#endif
 
 #ifndef __STRIP__ /* See strip.py */
 #ifndef CONFIG_SMT

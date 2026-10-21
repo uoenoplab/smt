@@ -13,6 +13,10 @@
 #include "homa_qdisc.h"
 #endif /* See strip.py */
 
+#ifdef CONFIG_SMT
+#include "smt_plumbing.h"
+#endif
+
 /**
  * homa_rpc_alloc_client() - Allocate and initialize a client RPC (one that
  * is used to issue an outgoing request). Doesn't send any packets. Invoked
@@ -80,6 +84,14 @@ struct homa_rpc *homa_rpc_alloc_client(struct homa_sock *hsk,
 		err = -ESHUTDOWN;
 		goto error;
 	}
+#ifdef CONFIG_SMT
+	err = smt_rpc_alloc_client_sock_lock(hsk, crpc);
+	if (err != 0) {
+		homa_sock_unlock(hsk);
+		homa_rpc_unlock(crpc);
+		goto error;
+	}
+#endif
 	hlist_add_head(&crpc->hash_links, &bucket->rpcs);
 	rcu_read_lock();
 	list_add_tail_rcu(&crpc->active_links, &hsk->active_rpcs);
@@ -558,6 +570,10 @@ release:
 
 		rpc = rpcs[i];
 		UNIT_LOG("; ", "reaped %llu", rpc->id);
+#ifdef CONFIG_SMT
+		if (is_smt_rpc(rpc))
+			smt_rpc_release(rpc);
+#endif
 
 		/* Free any unconsumed input packets and gaps (there
 		 * shouldn't usually be any of either).
