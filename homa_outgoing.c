@@ -140,7 +140,7 @@ int homa_tx_copy_from_user(struct homa_rpc *rpc, struct iov_iter *iter,
 	offset = 0;
 #ifdef CONFIG_SMT
 	if (is_smt_rpc(rpc)) {
-		err = smt_tx_fill(rpc, &filler, iter);
+		err = smt_tx_fill(rpc, &filler, iter, xmit);
 		if (unlikely(err != 0))
 			goto done;
 	} else

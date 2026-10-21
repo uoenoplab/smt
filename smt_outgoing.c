@@ -143,10 +143,16 @@ static void smt_tx_rec_hdr(struct homa_rpc *rpc, u32 rec, int len, u8 *smt_h)
  * @rpc:     RPC whose outgoing message is being filled.
  * @filler:  Positioned at the start of rpc->msgout.frags.
  * @iter:    Message data in user space.
+ * @xmit:    Whether the caller transmits once the message is filled. With
+ *           CONFIG_SMT_TX_PIPELINE, each record but the last is then passed
+ *           to homa_xmit_data (still subject to grants, with the RPC locked
+ *           around it) as soon as it is sealed, so that transmission
+ *           overlaps the encryption of the next; upstream sends nothing
+ *           before the whole message is copied in.
  * Return:   Zero for success, otherwise a negative errno.
  */
 int smt_tx_fill(struct homa_rpc *rpc, struct homa_frag_filler *filler,
-		struct iov_iter *iter)
+		struct iov_iter *iter, bool xmit)
 {
 	int pre = SMT_RPC(rpc)->rec_pre, post = SMT_RPC(rpc)->rec_post;
 	u8 smt_h[SMT_RECORD_PRE_MAX], trailer[SMT_RECORD_POST_MAX];
@@ -201,6 +207,13 @@ int smt_tx_fill(struct homa_rpc *rpc, struct homa_frag_filler *filler,
 				return err;
 		}
 		smp_store_release(&rpc->msgout.copied_from_user, end);
+#ifdef CONFIG_SMT_TX_PIPELINE
+		if (xmit && end < rpc->msgout.length) {
+			homa_rpc_lock(rpc);
+			homa_xmit_data(rpc);
+			homa_rpc_unlock(rpc);
+		}
+#endif
 	}
 	return 0;
 }

@@ -61,7 +61,7 @@ struct homa_frag_filler;
 void smt_tx_init(struct homa_rpc *rpc);
 int smt_tx_frag_bytes(struct homa_rpc *rpc);
 int smt_tx_fill(struct homa_rpc *rpc, struct homa_frag_filler *filler,
-		struct iov_iter *iter);
+		struct iov_iter *iter, bool xmit);
 int smt_tx_skb_range(struct homa_rpc *rpc, u32 *offset, u32 *end,
 		     int *bytes, u64 *segs);
 void smt_tx_skb_hdr(struct homa_rpc *rpc, struct sk_buff *skb, u32 offset);
