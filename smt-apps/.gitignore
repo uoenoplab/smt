@@ -1,0 +1,13 @@
+# Binaries built in this subtree
+setkey/smt_setkey
+unloaded/simple_client
+unloaded/simple_server
+
+# Object files
+*.o
+loaded/loaded_client
+loaded/loaded_server
+handshake/smt_handshake
+handshake/*.pem
+handshake/smt_handshake_go
+!handshake/go/go.mod
