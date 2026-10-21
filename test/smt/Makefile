@@ -34,7 +34,8 @@ CFLAGS :=    $(LINUX_CFLAGS) -fsanitize=address -include smt_test.h
 CCFLAGS :=   -std=c++11 $(WARNS) -MD -g -I. -I.. -I../.. $(DEFS) \
 		-fsanitize=address -fno-omit-frame-pointer
 
-TEST_SRCS := unit_smt_outgoing.c \
+TEST_SRCS := unit_smt_incoming.c \
+	     unit_smt_outgoing.c \
 	     unit_smt_utils.c
 
 HOMA_SRCS := homa_devel.c \

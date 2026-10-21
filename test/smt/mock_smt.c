@@ -64,6 +64,12 @@ bool __wrap_queue_work_on(int cpu, struct workqueue_struct *wq,
 	return true;
 }
 
+void __bitmap_clear(unsigned long *map, unsigned int start, int len)
+{
+	for (; len > 0; len--, start++)
+		__clear_bit(start, map);
+}
+
 /* A pool without AEAD requests, with the reference count of the real one. */
 struct smt_sw_context *smt_sw_ctx_alloc(const union tls_crypto_context *info,
 					int n)

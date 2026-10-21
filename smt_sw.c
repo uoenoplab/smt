@@ -468,6 +468,9 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
 	}
 
 	smt_bigint_increment(r->rec_seq, sizeof(r->rec_seq));
+	if (!homa_is_client(rpc->id) &&
+	    SMT_RX_INFO(skbs[0])->record_data_offset == 0)
+		smt_replay_accept(rpc);
 	ret = 0;
 out:
 	smt_sw_push_crypto(sw_ctx, crypto);

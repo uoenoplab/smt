@@ -43,6 +43,12 @@ static inline struct hlist_head *smt_ctx_bucket(struct homa_sock *hsk,
 	return &SMT_SOCK(hsk)->ctx_buckets[bucket_id];
 }
 
+static void smt_replay_put(struct smt_replay_window *w)
+{
+	if (w && refcount_dec_and_test(&w->refs))
+		kfree(w);
+}
+
 static void smt_ctx_free(struct work_struct *work)
 {
 	struct smt_context *ctx = container_of(work, struct smt_context,
@@ -52,6 +58,7 @@ static void smt_ctx_free(struct work_struct *work)
 		smt_sw_ctx_put(ctx->offload_tx);
 	if (ctx->rx_conf == SMT_SW)
 		smt_sw_ctx_put(ctx->offload_rx);
+	smt_replay_put(ctx->replay);
 	memzero_explicit(ctx, sizeof(*ctx));
 	kmem_cache_free(smt_ctx_kmem, ctx);
 }
@@ -77,6 +84,13 @@ static struct smt_context *smt_ctx_alloc(u32 peer_addr, u16 peer_port)
 
 	if (!ctx)
 		return NULL;
+	ctx->replay = kzalloc(sizeof(*ctx->replay), GFP_KERNEL);
+	if (!ctx->replay) {
+		kmem_cache_free(smt_ctx_kmem, ctx);
+		return NULL;
+	}
+	spin_lock_init(&ctx->replay->lock);
+	refcount_set(&ctx->replay->refs, 1);
 	ctx->peer_addr = peer_addr;
 	ctx->peer_port = peer_port;
 	refcount_set(&ctx->refs, 1);
@@ -162,7 +176,8 @@ static int smt_ctx_init(const union tls_crypto_context *info,
 }
 
 /* Give @nctx, which replaces @old, the key of the direction that stays
- * (@tx: the TX key is replaced).
+ * (@tx: the TX key is replaced). A kept RX key keeps its replay window: it
+ * records the requests that key authenticated.
  */
 static void smt_ctx_carry(struct smt_context *nctx, struct smt_context *old,
 			  int tx)
@@ -172,6 +187,9 @@ static void smt_ctx_carry(struct smt_context *nctx, struct smt_context *old,
 		nctx->crypto_recv = old->crypto_recv;
 		if (old->rx_conf == SMT_SW)
 			nctx->offload_rx = smt_sw_ctx_get(old->offload_rx);
+		smt_replay_put(nctx->replay);
+		nctx->replay = old->replay;
+		refcount_inc(&nctx->replay->refs);
 	} else {
 		nctx->tx_conf = old->tx_conf;
 		nctx->crypto_send = old->crypto_send;
