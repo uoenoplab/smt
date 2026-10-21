@@ -56,7 +56,8 @@ HOMA_SRCS := homa_devel.c \
 	     homa_utils.c \
 	     timetrace.c
 
-SMT_SRCS :=  smt_outgoing.c \
+SMT_SRCS :=  smt_incoming.c \
+	     smt_outgoing.c \
 	     smt_plumbing.c \
 	     smt_utils.c
 

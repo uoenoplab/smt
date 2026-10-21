@@ -20,4 +20,24 @@
  */
 #define SMT_MAX_RECORD_SEGS 20
 
+/* Whether a DATA packet with @data_len bytes of data holds the whole
+ * message of @msg_len bytes: an SMT packet also carries its record's
+ * header and trailer.
+ */
+#ifdef CONFIG_SMT
+#define SMT_WHOLE_MSG(data_len, msg_len) ((data_len) >= (msg_len))
+#else
+#define SMT_WHOLE_MSG(data_len, msg_len) ((data_len) == (msg_len))
+#endif
+
+struct smt_rx_logical_info {
+	int start;
+	int length;
+	int end;
+	int record_data_len;
+	int record_data_offset;
+};
+
+#define SMT_RX_INFO(skb) ((struct smt_rx_logical_info *)(skb)->cb)
+
 #endif /* _SMT_PLUMBING_IMPL_H */

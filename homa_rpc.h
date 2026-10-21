@@ -536,7 +536,8 @@ struct homa_rpc
 struct homa_rpc
 	*homa_rpc_alloc_server(struct homa_sock *hsk,
 			       const struct in6_addr *source,
-			       struct homa_common_hdr *h);
+			       struct homa_common_hdr *h,
+			       struct sk_buff *skb);
 void     homa_rpc_end(struct homa_rpc *rpc);
 struct homa_rpc
 	*homa_rpc_find_client(struct homa_sock *hsk, u64 id);

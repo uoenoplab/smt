@@ -450,7 +450,11 @@ struct ctl_table homa_ctl_table[] = {
 /* Sizes of the headers for each Homa packet type, in bytes. */
 #ifndef __STRIP__ /* See strip.py */
 static const u16 header_lengths[] = {
+#ifdef CONFIG_SMT
+	sizeof(struct homa_data_hdr) - sizeof(struct homa_seg_hdr), // to allow trailer only
+#else
 	sizeof(struct homa_data_hdr),
+#endif
 	sizeof(struct homa_grant_hdr),
 	sizeof(struct homa_resend_hdr),
 	sizeof(struct homa_rpc_unknown_hdr),

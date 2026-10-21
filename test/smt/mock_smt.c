@@ -92,3 +92,8 @@ int smt_sw_encrypt(struct homa_rpc *rpc, u32 rec,
 {
 	return 0;
 }
+
+int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
+{
+	return 0;
+}

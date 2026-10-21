@@ -15,6 +15,7 @@ HOMA_OBJS := homa_devel.o \
 	timetrace.o
 
 SMT_OBJS := smt_plumbing.o \
+	smt_incoming.o \
 	smt_outgoing.o \
 	smt_sw.o \
 	smt_utils.o

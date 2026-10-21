@@ -295,3 +295,181 @@ out:
 	smt_sw_push_crypto(sw_ctx, crypto);
 	return ret;
 }
+
+/**
+ * smt_sw_decrypt() - Decrypt an assembled record in place.
+ * @rpc:        SMT RPC.
+ * @skbs:       Array of skbs that together form exactly one TLS record, in
+ *              order. The first skb must be the record's first segment and
+ *              carry smt_h in its linear part at offset
+ *              SMT_SW_SGVEC_OFFSET. The last skb must carry the trailer.
+ * @n:          Number of skbs.
+ */
+int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
+{
+	struct smt_rpc_sw_context *r = smt_rpc_sw_rx(rpc);
+	struct smt_sw_context *sw_ctx = SMT_RPC(rpc)->ctx->offload_rx;
+	int pre = SMT_RPC(rpc)->rec_pre, post = SMT_RPC(rpc)->rec_post;
+	u8 iv[TLS_CIPHER_AES_GCM_128_SALT_SIZE +
+	      TLS_CIPHER_AES_GCM_128_IV_SIZE];
+	struct smt_sw_crypto *crypto;
+	struct scatterlist *sg;
+	u8 *smt_h, type = 0;
+	int i, nsg_total = 0, ret, crypt_len;
+	int total_sg_bytes = 0;
+
+	if (n <= 0)
+		return -EINVAL;
+
+	crypto = smt_sw_borrow_crypto(rpc, 0);
+	if (IS_ERR(crypto))
+		return PTR_ERR(crypto);
+
+	sg = crypto->crypt_sg;
+	{
+		int max_nsg = 0;
+
+		for (i = 0; i < n; i++)
+			max_nsg += skb_shinfo(skbs[i])->nr_frags + 1;
+		if (max_nsg < 1)
+			max_nsg = 1;
+		if (max_nsg > SMT_MAX_CRYPT_SG)
+			max_nsg = SMT_MAX_CRYPT_SG;
+		sg_init_table(sg, max_nsg);
+	}
+
+	for (i = 0; i < n; i++) {
+		struct sk_buff *skb = skbs[i];
+		int offset = SMT_SW_SGVEC_OFFSET;
+		int len = skb->len - offset;
+		int nsg;
+
+		if (unlikely(len <= 0))
+			continue;
+		if (unlikely(nsg_total >= SMT_MAX_CRYPT_SG - 4)) {
+			smt_pr_err("%s: sgvec overflow (%d skbs)\n",
+				   __func__, n);
+			ret = -EMSGSIZE;
+			goto out;
+		}
+		/* Fast path: NIC delivers small skbs entirely in linear; build
+		 * one sg entry directly. Multi-frag skbs (GRO jumbo) fall back
+		 * to skb_to_sgvec_nomark.
+		 */
+		if (likely(skb_shinfo(skb)->nr_frags == 0)) {
+			sg_set_buf(&sg[nsg_total], skb->data + offset, len);
+			nsg = 1;
+		} else {
+			nsg = skb_to_sgvec_nomark(skb, &sg[nsg_total], offset,
+						  len);
+			if (nsg <= 0) {
+				smt_pr_err("%s: skb_to_sgvec_nomark failed %d\n",
+					   __func__, nsg);
+				ret = nsg < 0 ? nsg : -EINVAL;
+				goto out;
+			}
+		}
+		nsg_total += nsg;
+		total_sg_bytes += len;
+	}
+	if (nsg_total == 0) {
+		ret = -EINVAL;
+		goto out;
+	}
+	sg_mark_end(&sg[nsg_total - 1]);
+
+	if (total_sg_bytes < pre + post) {
+		ret = -EBADMSG;
+		goto out;
+	}
+	crypt_len = total_sg_bytes - pre;
+
+	/* The AAD takes the place of smt_h. TLS 1.3's is the record header
+	 * as received; TLS 1.2's is the sequence number (which the explicit
+	 * nonce is overwritten with) and the header with the plaintext
+	 * length.
+	 */
+	smt_h = skbs[0]->data + SMT_SW_SGVEC_OFFSET;
+	if (!smt_rpc_tls13(rpc)) {
+		memcpy(smt_h, r->rec_seq, TLS_CIPHER_AES_GCM_128_IV_SIZE);
+		smt_h[TLS_CIPHER_AES_GCM_128_IV_SIZE + 0] = 0x17;
+		smt_h[TLS_CIPHER_AES_GCM_128_IV_SIZE + 1] = 0x03;
+		smt_h[TLS_CIPHER_AES_GCM_128_IV_SIZE + 2] = 0x03;
+		put_unaligned_be16(crypt_len - post,
+				   smt_h + TLS_CIPHER_AES_GCM_128_IV_SIZE + 3);
+	}
+	smt_nonce(iv, r->iv, get_unaligned_be64(r->rec_seq));
+
+	smt_pr_devel(KERN_NOTICE "smt_sw_decrypt: rpc %lld n=%d crypt_len=%d total_sg_bytes=%d record_start=%d record_len=%d rec_seq=%*phN\n",
+	       rpc->id, n, crypt_len, total_sg_bytes,
+	       SMT_RX_INFO(skbs[0])->start, SMT_RX_INFO(skbs[0])->record_data_len,
+	       TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
+
+	/* The AAD is the first pre bytes, smt_h's place, in both versions. */
+	ret = smt_sw_do_crypt(crypto, sg, sg, pre, crypt_len, iv, false);
+	/* TLS 1.3's content type, while sg still maps the plaintext. */
+	if (smt_rpc_tls13(rpc))
+		scatterwalk_map_and_copy(&type, sg, total_sg_bytes - post, 1, 0);
+	if (unlikely(ret)) {
+		smt_pr_err("%s: decrypt failed %d rpc %lld n=%d crypt_len=%d total_sg_bytes=%d\n",
+			   __func__, ret, rpc->id, n, crypt_len,
+			   total_sg_bytes);
+		smt_pr_err("%s: rec_seq=%*phN iv=%*phN aad=%*phN\n",
+			   __func__,
+			   (int)TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE,
+			   r->rec_seq,
+			   (int)sizeof(iv), iv, pre, smt_h);
+		/* Dump per-skb: header (first 48 B after transport) and, for
+		 * the last skb, the trailing 16 B that should be the GCM tag.
+		 * Content comes via skb_copy_bits because bytes may live in
+		 * frags.
+		 */
+		for (i = 0; i < n; i++) {
+			struct sk_buff *skb = skbs[i];
+			int off = SMT_SW_SGVEC_OFFSET;
+			int len = skb->len - off;
+			u8 buf[48];
+			int dump = min(len, (int)sizeof(buf));
+			struct homa_data_hdr *dh =
+				(struct homa_data_hdr *)skb_transport_header(skb);
+			u8 retrans = dh ? dh->retransmit : 0;
+			u32 seq = dh ? ntohl(dh->common.sequence) : 0;
+
+			smt_pr_err("%s: rpc %lld skb[%d] retransmit=0x%02x sequence=%u skb=%px\n",
+				   __func__, rpc->id, i, retrans, seq, skb);
+			if (dump <= 0)
+				continue;
+			if (skb_copy_bits(skb, off, buf, dump) == 0)
+				smt_pr_err("%s: rpc %lld skb[%d] head(%d/%d): %*phN\n",
+					   __func__, rpc->id, i, dump, len,
+					   dump, buf);
+			if (i == n - 1 && len >= 16) {
+				u8 tag[16];
+
+				if (skb_copy_bits(skb, off + len - 16,
+						  tag, 16) == 0)
+					smt_pr_err("%s: rpc %lld skb[%d] tail(16): %*phN\n",
+						   __func__, rpc->id, i, 16, tag);
+			}
+		}
+		goto out;
+	}
+
+	/* TLS 1.3: the plaintext ends with its content type, which must be
+	 * application data (SMT never pads).
+	 */
+	if (smt_rpc_tls13(rpc)) {
+		if (unlikely(type != 0x17)) {
+			smt_pr_err("%s: rpc %lld record content type 0x%02x\n",
+				   __func__, rpc->id, type);
+			ret = -EBADMSG;
+			goto out;
+		}
+	}
+
+	smt_bigint_increment(r->rec_seq, sizeof(r->rec_seq));
+	ret = 0;
+out:
+	smt_sw_push_crypto(sw_ctx, crypto);
+	return ret;
+}

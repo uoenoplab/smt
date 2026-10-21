@@ -116,6 +116,8 @@ error:
  * @source:   IP address (network byte order) of the RPC's client.
  * @h:        Header for the first data packet received for this RPC; used
  *            to initialize the RPC. Must have type DATA or START_MSG.
+ * @skb:      The sk_buff containing @h; used to check SMT first-packet
+ *            condition for early handoff.
  *
  * Return:  A pointer to a new RPC, which is locked, or a negative errno
  *          if an error occurred. If there is already an RPC corresponding
@@ -123,7 +125,8 @@ error:
  */
 struct homa_rpc *homa_rpc_alloc_server(struct homa_sock *hsk,
 				       const struct in6_addr *source,
-				       struct homa_common_hdr *h)
+				       struct homa_common_hdr *h,
+				       struct sk_buff *skb)
 	__COND_ACQUIRES(srpc->bucket->lock)
 {
 	u64 id = homa_local_id(h->sender_id);
@@ -219,9 +222,30 @@ struct homa_rpc *homa_rpc_alloc_server(struct homa_sock *hsk,
 		err = -ESHUTDOWN;
 		goto error;
 	}
+#ifdef CONFIG_SMT
+	err = smt_rpc_alloc_server_sock_lock(hsk, srpc);
+	if (err != 0) {
+		homa_sock_unlock(hsk);
+		goto error;
+	}
+#endif
 	hlist_add_head(&srpc->hash_links, &bucket->rpcs);
 	list_add_tail_rcu(&srpc->active_links, &hsk->active_rpcs);
 	homa_sock_unlock(hsk);
+#ifdef CONFIG_SMT
+	/* SMT can only deliver whole records: hand off early only when this
+	 * first packet already holds the entire message.
+	 */
+	if (is_smt_rpc(srpc)) {
+		if (h->type == DATA && srpc->msgin.num_bpages > 0 &&
+		    homa_data_len(skb) >= srpc->msgin.length +
+					  SMT_RPC(srpc)->rec_pre +
+					  SMT_RPC(srpc)->rec_post) {
+			set_bit(RPC_PKTS_READY, &srpc->flags);
+			homa_rpc_handoff(srpc);
+		}
+	} else
+#endif
 	if (h->type == DATA && srpc->msgin.num_bpages > 0) {
 		set_bit(RPC_PKTS_READY, &srpc->flags);
 		homa_rpc_handoff(srpc);

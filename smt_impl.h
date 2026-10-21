@@ -61,6 +61,13 @@ enum {
 
 #define SMT_MAX_CRYPT_SG 128
 
+/* Offset (from skb->data / transport_header) where smt_h begins in the
+ * linear part of a received packet: immediately after the truncated
+ * homa_data_hdr (which omits the final homa_seg_hdr).
+ */
+#define SMT_SW_SGVEC_OFFSET \
+	((int)(sizeof(struct homa_data_hdr) - sizeof(struct homa_seg_hdr)))
+
 /* Plaintext bytes each data segment of a record starts with: the
  * homa_seg_hdr Homa puts there, which SMT's receiver never reads (it places
  * segments by IP id and the record offset in pad).
@@ -228,6 +235,19 @@ static inline void smt_rpc_init_rec_seq(struct homa_rpc *rpc, bool tx,
 	put_unaligned_be64(seq, rec_seq);
 }
 
+/* Copied from tls.h tls_bigint_increment */
+static inline bool smt_bigint_increment(u8 *seq, int len)
+{
+	int i;
+
+	for (i = len - 1; i >= 0; i--) {
+		++seq[i];
+		if (seq[i] != 0)
+			break;
+	}
+	return (i == -1);
+}
+
 struct smt_sw_context *
 smt_sw_ctx_alloc(const union tls_crypto_context *info, int n);
 void smt_sw_ctx_put(struct smt_sw_context *sw_ctx);
@@ -248,6 +268,62 @@ int smt_sw_encrypt(struct homa_rpc *rpc, u32 rec,
 static inline const u8 *smt_rpc_tx_rec_seq(struct homa_rpc *rpc)
 {
 	return smt_rpc_sw_tx(rpc)->rec_seq;
+}
+
+/* smt_incoming.c */
+
+/* Index of this packet within its GSO packet: GSO/TSO number the segments
+ * of each packet from IP id 0 (see homa_gso_segment), and ip_select_ident
+ * gives id 0 to a DF packet from an unconnected socket. IPv4 only.
+ */
+static inline u16 smt_logical_ip_id(struct sk_buff *skb)
+{
+	return ntohs(ip_hdr(skb)->id);
+}
+
+static inline u32 smt_gso_offset(struct sk_buff *skb)
+{
+	struct homa_data_hdr *h = (struct homa_data_hdr *)skb->data;
+
+	return ((u8)h->pad[0] << 16) | ((u8)h->pad[1] << 8) | (u8)h->pad[2];
+}
+
+/* Segments in each full record of the packet's GSO packet; 0 from a sender
+ * that puts one record in each GSO packet.
+ */
+static inline u32 smt_rx_rec_segs(struct sk_buff *skb)
+{
+	return ntohl(((struct homa_data_hdr *)skb->data)->reserved1);
+}
+
+/* Data bytes of @skb, segment @seg of its record. */
+static inline int smt_logical_data_bytes(struct homa_rpc *rpc,
+					 struct sk_buff *skb, u16 seg)
+{
+	int skb_len = skb->len - skb_transport_offset(skb) -
+		      SMT_SW_SGVEC_OFFSET - SMT_SEG_HDR;
+
+	/* A record's first segment always carries smt_h and a seg_hdr, however
+	 * little data the record holds; a later segment holding only (part
+	 * of) the trailer has no seg_hdr.
+	 */
+	if (seg == 0)
+		return skb_len - SMT_RPC(rpc)->rec_pre - SMT_RPC(rpc)->rec_post;
+	if (unlikely(skb_len + SMT_SEG_HDR <= SMT_RPC(rpc)->rec_post))
+		return skb_len + SMT_SEG_HDR;
+	return skb_len;
+}
+
+/* Message offset of segment @seg of the record that starts at @rec_offset. */
+static inline int smt_logical_offset(struct homa_rpc *rpc, u16 seg,
+				     u32 rec_offset)
+{
+	int offset = seg * SMT_SEG_DATA(SMT_RPC(rpc)->smt_max_pkt_data) +
+		     (int)rec_offset;
+
+	if (seg != 0)
+		offset -= SMT_RPC(rpc)->rec_pre + SMT_RPC(rpc)->rec_post;
+	return offset;
 }
 
 #endif /* _SMT_IMPL_H */

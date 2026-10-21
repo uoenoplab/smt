@@ -64,4 +64,20 @@ int smt_tx_skb_range(struct homa_rpc *rpc, u32 *offset, u32 *end,
 		     int *bytes, u64 *segs);
 void smt_tx_skb_hdr(struct homa_rpc *rpc, struct sk_buff *skb, u32 offset);
 
+/* smt_sw.c */
+
+extern int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs,
+			  int n);
+
+/* smt_incoming.c */
+
+struct smt_rx_logical_info smt_calc_rx_logical_info(struct homa_rpc *rpc,
+				      struct sk_buff *skb);
+
+bool smt_record_complete(struct homa_rpc *rpc, struct sk_buff *skb);
+
+int smt_data_offset(struct homa_rpc *rpc, struct sk_buff *skb);
+
+int smt_rpc_alloc_server_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc);
+
 #endif /* _SMT_PLUMBING_H */
