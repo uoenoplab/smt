@@ -10,7 +10,10 @@
  * GSO cuts the payload every max_seg_data + sizeof(homa_seg_hdr) bytes, so
  * the first segment carries smt_h plus max_seg_data - rec_pre data bytes,
  * and the trailer spills into a final segment without a seg_hdr when the
- * last one has no room for it. A record holds rpc->msgout.max_gso_data message bytes (the last one may hold
+ * last one has no room for it. With CONFIG_SMT_NO_SEG_HDR the frags carry
+ * no seg_hdrs (data, then the trailer), so every segment carries
+ * SMT_SEG_DATA(max_seg_data) bytes of the record. A record
+ * holds rpc->msgout.max_gso_data message bytes (the last one may hold
  * fewer). The frags part of every record is laid out in rpc->msgout.frags
  * when the message is copied in from user space, and encrypted there for
  * SW crypto; smt_h is derived from the record index whenever the packet is
@@ -99,7 +102,12 @@ int smt_tx_frag_bytes(struct homa_rpc *rpc)
  * @rpc:     RPC whose outgoing message is being filled.
  * @filler:  Positioned at the start of rpc->msgout.frags.
  * @iter:    Message data in user space.
- * @xmit:    Whether the caller transmits once the message is filled.
+ * @xmit:    Whether the caller transmits once the message is filled. With
+ *           CONFIG_SMT_TX_PIPELINE, each record but the last is then passed
+ *           to homa_xmit_data (still subject to grants, with the RPC locked
+ *           around it) as soon as it is sealed, so that transmission
+ *           overlaps the encryption of the next; upstream sends nothing
+ *           before the whole message is copied in.
  * Return:   Zero for success, otherwise a negative errno.
  */
 int smt_tx_fill(struct homa_rpc *rpc, struct homa_frag_filler *filler,
@@ -152,6 +160,13 @@ int smt_tx_fill(struct homa_rpc *rpc, struct homa_frag_filler *filler,
 				return err;
 		}
 		smp_store_release(&rpc->msgout.copied_from_user, end);
+#ifdef CONFIG_SMT_TX_PIPELINE
+		if (xmit && end < rpc->msgout.length) {
+			homa_rpc_lock(rpc);
+			homa_xmit_data(rpc);
+			homa_rpc_unlock(rpc);
+		}
+#endif
 	}
 	return 0;
 }

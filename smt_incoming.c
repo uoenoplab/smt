@@ -107,6 +107,7 @@ int smt_data_offset(struct homa_rpc *rpc, struct sk_buff *skb)
 	return offset;
 }
 
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 /* Whether @rpc's request can't be new: its message number is older than the
  * window or was authenticated already. Counts the reason.
  */
@@ -166,13 +167,16 @@ void smt_replay_accept(struct homa_rpc *rpc)
 out:
 	spin_unlock_bh(&w->lock);
 }
+#endif
 
 int smt_rpc_alloc_server_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
 {
 	int err;
 
 	err = smt_rpc_ctx_init(hsk, rpc);
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 	if (!err && is_smt_rpc(rpc) && smt_replay_seen(rpc))
 		err = -EALREADY;
+#endif
 	return err;
 }

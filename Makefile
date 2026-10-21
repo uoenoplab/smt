@@ -20,6 +20,13 @@ SMT_OBJS := smt_plumbing.o \
 	smt_sw.o \
 	smt_utils.o
 
+# SMT's optional features, all on by default (README.md lists them and the
+# other CONFIG_SMT_* switches): build without one by leaving it out of
+# SMT_FEATURES, add others with SMT_CFLAGS. NO_CONFIG_SMT=1 builds plain Homa.
+SMT_FEATURES ?= -DCONFIG_SMT_TX_PIPELINE \
+	-DCONFIG_SMT_RX_ALIGN \
+	-DENABLE_TIME_TRACE=0
+
 ifneq ($(__STRIP__),)
 MY_CFLAGS += -D__STRIP__
 else
@@ -49,7 +56,7 @@ ifneq ($(KERNELRELEASE),)
 obj-m += homa.o
 ifeq ($(NO_CONFIG_SMT),)
 homa-y = $(HOMA_OBJS) $(SMT_OBJS)
-override SMT_CFLAGS += -DCONFIG_SMT
+override SMT_CFLAGS += -DCONFIG_SMT $(SMT_FEATURES)
 else
 homa-y = $(HOMA_OBJS)
 endif

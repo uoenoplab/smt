@@ -61,7 +61,9 @@ static inline struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
 		return ERR_PTR(-ENOMEM);
 	}
 
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 	spin_lock_init(&ctx->replay.lock);
+#endif
 	ctx->tx_conf = reuse_ctx->tx_conf;
 	ctx->rx_conf = reuse_ctx->rx_conf;
 	ctx->peer_addr = peer_addr;
@@ -212,7 +214,9 @@ static int smt_ctx_install(struct homa_sock *hsk, const struct smt_info *peer,
 			rc = -ENOMEM;
 			goto unlock;
 		}
+#ifndef CONFIG_SMT_NO_REPLAY_GUARD
 		spin_lock_init(&ctx->replay.lock);
+#endif
 		hlist_add_head(&ctx->hlist, bucket);
 		created = true;
 	}
