@@ -275,6 +275,7 @@ struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#ifndef CONFIG_SMT
 	{
 		.procname	= "hijack_tcp",
 		.data		= OFFSET(hijack_tcp),
@@ -282,6 +283,7 @@ struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+#endif
 	{
 		.procname	= "link_mbps",
 		.data		= OFFSET(link_mbps),
@@ -655,7 +657,9 @@ int __init homa_load(void)
 	}
 
 #ifndef __STRIP__ /* See strip.py */
+#ifndef CONFIG_SMT
 	homa_hijack_init();
+#endif
 #endif /* See strip.py */
 #ifndef __UPSTREAM__ /* See strip.py */
 	tt_set_temp(homa->temp);
@@ -711,7 +715,9 @@ void __exit homa_unload(void)
 	pr_notice("Homa module unloading\n");
 
 #ifndef __STRIP__ /* See strip.py */
+#ifndef CONFIG_SMT
 	homa_hijack_end();
+#endif
 #endif /* See strip.py */
 	if (timer_kthread)
 		kthread_stop(timer_kthread);
