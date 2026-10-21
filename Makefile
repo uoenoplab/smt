@@ -24,7 +24,8 @@ SMT_OBJS := smt_plumbing.o \
 # other CONFIG_SMT_* switches): build without one by leaving it out of
 # SMT_FEATURES, add others with SMT_CFLAGS. NO_CONFIG_SMT=1 builds plain Homa.
 SMT_FEATURES ?= -DCONFIG_SMT_TX_PIPELINE \
-	-DCONFIG_SMT_RX_ALIGN
+	-DCONFIG_SMT_RX_ALIGN \
+	-DENABLE_TIME_TRACE=0
 
 ifneq ($(__STRIP__),)
 MY_CFLAGS += -D__STRIP__
