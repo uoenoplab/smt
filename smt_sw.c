@@ -296,6 +296,28 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_SMT_RX_ALIGN
+/* Exchange the last moved[i] bytes of skb i's ciphertext with the moved[i]
+ * header bytes just before skb i+1's (smt_sw_decrypt picks moved[i] so that
+ * every skb's part of its sg ends on a 16-byte boundary of the ciphertext:
+ * x86 AES-GCM then steps from skb to skb instead of bouncing 16 bytes across
+ * each boundary). The headers were parsed in softirq and the regions don't
+ * overlap, so a second call puts every byte back.
+ */
+static void smt_sw_rx_swap(struct sk_buff **skbs, int n, const u8 *moved)
+{
+	int i, j;
+
+	for (i = 0; i + 1 < n && i < SMT_MAX_RECORD_SEGS; i++) {
+		u8 *a = skbs[i]->data + skbs[i]->len - moved[i];
+		u8 *b = skbs[i + 1]->data + SMT_SW_SGVEC_OFFSET - moved[i];
+
+		for (j = 0; j < moved[i]; j++)
+			swap(a[j], b[j]);
+	}
+}
+#endif
+
 /**
  * smt_sw_decrypt() - Decrypt an assembled record in place.
  * @rpc:        SMT RPC.
@@ -317,6 +339,11 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
 	u8 *smt_h, type = 0;
 	int i, nsg_total = 0, ret, crypt_len;
 	int total_sg_bytes = 0;
+#ifdef CONFIG_SMT_RX_ALIGN
+	/* Ciphertext in the sg so far, and what moves to the next skb. */
+	int stream = 0, carry = 0;
+	u8 moved[SMT_MAX_RECORD_SEGS] = {};
+#endif
 
 	if (n <= 0)
 		return -EINVAL;
@@ -357,7 +384,27 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
 		 * to skb_to_sgvec_nomark.
 		 */
 		if (likely(skb_shinfo(skb)->nr_frags == 0)) {
+#ifdef CONFIG_SMT_RX_ALIGN
+			int own = len - (i ? 0 : pre);
+			int r = (stream + carry + own) % 16;
+
+			/* See smt_sw_rx_swap, which puts the previous skb's
+			 * carry bytes just before this skb's ciphertext.
+			 */
+			if (r && r <= own && i + 1 < n &&
+			    i < SMT_MAX_RECORD_SEGS &&
+			    !skb_shinfo(skbs[i + 1])->nr_frags &&
+			    skbs[i + 1]->len > offset)
+				moved[i] = r;
+			else
+				r = 0;
+			sg_set_buf(&sg[nsg_total], skb->data + offset - carry,
+				   len + carry - r);
+			stream += carry + own - r;
+			carry = r;
+#else
 			sg_set_buf(&sg[nsg_total], skb->data + offset, len);
+#endif
 			nsg = 1;
 		} else {
 			nsg = skb_to_sgvec_nomark(skb, &sg[nsg_total], offset,
@@ -368,6 +415,9 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
 				ret = nsg < 0 ? nsg : -EINVAL;
 				goto out;
 			}
+#ifdef CONFIG_SMT_RX_ALIGN
+			stream += len - (i ? 0 : pre);
+#endif
 		}
 		nsg_total += nsg;
 		total_sg_bytes += len;
@@ -405,11 +455,17 @@ int smt_sw_decrypt(struct homa_rpc *rpc, struct sk_buff **skbs, int n)
 	       SMT_RX_INFO(skbs[0])->start, SMT_RX_INFO(skbs[0])->record_data_len,
 	       TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE, r->rec_seq);
 
+#ifdef CONFIG_SMT_RX_ALIGN
+	smt_sw_rx_swap(skbs, n, moved);
+#endif
 	/* The AAD is the first pre bytes, smt_h's place, in both versions. */
 	ret = smt_sw_do_crypt(crypto, sg, sg, pre, crypt_len, iv, false);
 	/* TLS 1.3's content type, while sg still maps the plaintext. */
 	if (smt_rpc_tls13(rpc))
 		scatterwalk_map_and_copy(&type, sg, total_sg_bytes - post, 1, 0);
+#ifdef CONFIG_SMT_RX_ALIGN
+	smt_sw_rx_swap(skbs, n, moved);
+#endif
 	if (unlikely(ret)) {
 		smt_pr_err("%s: decrypt failed %d rpc %lld n=%d crypt_len=%d total_sg_bytes=%d\n",
 			   __func__, ret, rpc->id, n, crypt_len,
