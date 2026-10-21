@@ -1,0 +1,6 @@
+# Binaries built in this subtree
+unloaded/simple_client
+unloaded/simple_server
+
+# Object files
+*.o
