@@ -90,7 +90,7 @@ int homa_tx_copy_from_user(struct homa_rpc *rpc, struct iov_iter *iter,
 	__must_hold(rpc->bucket->lock)
 {
 	struct homa_frag_filler filler;
-	int err, hdr_space;
+	int err, hdr_space, frag_bytes;
 	u64 num_segs;
 	int offset;
 	int nid;
@@ -101,13 +101,14 @@ int homa_tx_copy_from_user(struct homa_rpc *rpc, struct iov_iter *iter,
 	num_segs = rpc->msgout.length + rpc->msgout.max_seg_data - 1;
 	do_div(num_segs, rpc->msgout.max_seg_data);
 	hdr_space = num_segs * sizeof(struct homa_seg_hdr);
+	frag_bytes = rpc->msgout.length + hdr_space;
 	rpc->msgout.frags = &rpc->msgout.frag;
 	rpc->msgout.num_frags = 1;
-	nid = homa_tx_pool_alloc(rpc->hsk->homa, rpc->msgout.length + hdr_space,
+	nid = homa_tx_pool_alloc(rpc->hsk->homa, frag_bytes,
 				 &rpc->msgout.num_frags, &rpc->msgout.frags);
 	if (nid < 0)
 		return nid;
-	rpc->msgout.frag_bytes = rpc->msgout.length + hdr_space;
+	rpc->msgout.frag_bytes = frag_bytes;
 	rpc->msgout.frag_nid = nid;
 	refcount_add(rpc->msgout.frag_bytes, &rpc->hsk->sock.sk_wmem_alloc);
 
@@ -235,6 +236,17 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 				     sizeof(struct homa_seg_hdr)) +
 			sizeof(struct homa_seg_hdr);
 
+	/* Compute how much data from rpc->msgout.frags to include in the
+	 * packet.
+	 */
+	num_segs = *end - offset + rpc->msgout.max_seg_data - 1;
+	do_div(num_segs, rpc->msgout.max_seg_data);
+	if (num_segs > rpc->msgout.max_gso_segs)
+		num_segs = rpc->msgout.max_gso_segs;
+	bytes_left = num_segs * (rpc->msgout.max_seg_data +
+				 sizeof(struct homa_seg_hdr)) -
+		     sizeof(struct homa_seg_hdr);
+
 	/* Try to continue scanning where we left off the last time (saves
 	 * repeatedly rescanning fragments from the beginning)
 	 */
@@ -253,17 +265,6 @@ struct sk_buff *homa_tx_skb_alloc(struct homa_rpc *rpc, u32 offset, u32 *end)
 		rpc->msgout.cur_frag_offset += skb_frag_size(msg_frag);
 	}
 	msg_frags_left = rpc->msgout.num_frags - rpc->msgout.cur_frag;
-
-	/* Compute how much data from rpc->msgout.frags to include in the
-	 * packet.
-	 */
-	num_segs = *end - offset + rpc->msgout.max_seg_data - 1;
-	do_div(num_segs, rpc->msgout.max_seg_data);
-	if (num_segs > rpc->msgout.max_gso_segs)
-		num_segs = rpc->msgout.max_gso_segs;
-	bytes_left = num_segs * (rpc->msgout.max_seg_data +
-				 sizeof(struct homa_seg_hdr)) -
-		     sizeof(struct homa_seg_hdr);
 
 	skb = __homa_skb_alloc(sizeof(struct homa_data_hdr));
 	if (unlikely(!skb))
