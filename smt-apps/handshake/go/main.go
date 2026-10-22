@@ -88,8 +88,8 @@ func homaOpen(port int) {
 		log.Fatal("mmap: ", err)
 	}
 	args := make([]byte, 16) // struct homa_rcvbuf_args
-	binary.LittleEndian.PutUint64(args, uint64(uintptr(unsafe.Pointer(&rbuf[0]))))
-	binary.LittleEndian.PutUint64(args[8:], uint64(len(rbuf)))
+	binary.NativeEndian.PutUint64(args, uint64(uintptr(unsafe.Pointer(&rbuf[0]))))
+	binary.NativeEndian.PutUint64(args[8:], uint64(len(rbuf)))
 	setsockopt(ipprotoHoma, soHomaRcvbuf, args)
 }
 
@@ -97,7 +97,11 @@ func homaOpen(port int) {
 // ip:port: struct smt_aes_gcm_128_info, a packed struct smt_info followed by
 // struct tls12_crypto_info_aes_gcm_128.
 func setKeys(ip net.IP, port int, tls13 bool, tx, rx []byte) {
-	for i, k := range [][]byte{tx, rx} {
+	for _, d := range []struct {
+		opt int
+		k   []byte
+	}{{tlsTX, tx}, {tlsRX, rx}} {
+		k := d.k
 		b := make([]byte, 50)
 		copy(b[0:4], ip.To4())                           // peer_addr
 		binary.BigEndian.PutUint16(b[4:6], uint16(port)) // peer_port; local_addr 0
@@ -105,8 +109,8 @@ func setKeys(ip net.IP, port int, tls13 bool, tx, rx []byte) {
 		if tls13 {
 			version = 0x0304
 		}
-		binary.LittleEndian.PutUint16(b[10:12], version)
-		binary.LittleEndian.PutUint16(b[12:14], 51) // TLS_CIPHER_AES_GCM_128
+		binary.NativeEndian.PutUint16(b[10:12], version)
+		binary.NativeEndian.PutUint16(b[12:14], 51) // TLS_CIPHER_AES_GCM_128
 		copy(b[22:38], k[:keyLen])                  // key
 		copy(b[38:42], k[keyLen:keyLen+4])          // salt
 		// TLS 1.3 nonces use the whole IV; TLS 1.2 records carry an
@@ -114,7 +118,7 @@ func setKeys(ip net.IP, port int, tls13 bool, tx, rx []byte) {
 		if tls13 {
 			copy(b[14:22], k[keyLen+4:keyLen+ivLen]) // iv
 		}
-		setsockopt(solTLS, []int{tlsTX, tlsRX}[i], b)
+		setsockopt(solTLS, d.opt, b)
 	}
 }
 
@@ -132,16 +136,18 @@ func msghdr(to *syscall.RawSockaddrInet4, iov []syscall.Iovec, ctl unsafe.Pointe
 }
 
 // sys makes a sendmsg or recvmsg call, again when a signal interrupts it (Go
-// preempts goroutines with signals). That is safe for recvmsg: Homa frees
-// the bpages it was handed and writes num_bpages 0 back before it waits.
-func sys(trap uintptr, m *syscall.Msghdr) int {
+// preempts goroutines with signals). That is safe: recvmsg frees the bpages it
+// was handed before it waits and writes num_bpages 0 back on its way out, and
+// sendmsg is interrupted only while waiting for buffer space, before it
+// creates the RPC.
+func sys(name string, trap uintptr, m *syscall.Msghdr) (int, error) {
 	for {
 		n, _, e := syscall.Syscall(trap, uintptr(homaFD), uintptr(unsafe.Pointer(m)), 0)
 		if e == 0 {
-			return int(n)
+			return int(n), nil
 		}
 		if e != syscall.EINTR {
-			log.Fatalf("syscall %d: %v", trap, e)
+			return 0, fmt.Errorf("%s: %w", name, e)
 		}
 	}
 }
@@ -169,7 +175,8 @@ func handshakes(tlsPort int) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	l, err := tls.Listen("tcp", fmt.Sprintf(":%d", tlsPort),
+	// IPv4 only, as SMT: the peer's address goes into its key.
+	l, err := tls.Listen("tcp4", fmt.Sprintf(":%d", tlsPort),
 		&tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13})
 	if err != nil {
 		log.Fatal(err)
@@ -179,25 +186,41 @@ func handshakes(tlsPort int) {
 		if err != nil {
 			continue
 		}
-		hello := make([]byte, 3)
 		conn := c.(*tls.Conn)
-		if _, err = io.ReadFull(conn, hello); err != nil {
+		conn.SetDeadline(time.Now().Add(10 * time.Second))
+		if err := handshake(conn); err != nil {
 			log.Print("handshake: ", err)
-			conn.Close()
-			continue
 		}
-		cs := conn.ConnectionState()
-		keys, err := cs.ExportKeyingMaterial(label, nil, 2*(keyLen+ivLen))
-		if err != nil {
-			log.Fatal(err)
-		}
-		peer := conn.RemoteAddr().(*net.TCPAddr)
-		port := int(binary.BigEndian.Uint16(hello[:2]))
-		setKeys(peer.IP, port, hello[2] == 13, keys[keyLen+ivLen:], keys[:keyLen+ivLen])
-		conn.Write([]byte{1})
-		fmt.Printf("keys for %s:%d, TLS 1.%d records\n", peer.IP, port, map[bool]int{true: 3, false: 2}[hello[2] == 13])
 		conn.Close()
 	}
+}
+
+// handshake gives the client on conn its keys.
+func handshake(conn *tls.Conn) error {
+	hello := make([]byte, 3)
+	if _, err := io.ReadFull(conn, hello); err != nil {
+		return err
+	}
+	peer := conn.RemoteAddr().(*net.TCPAddr)
+	port := int(binary.BigEndian.Uint16(hello[:2]))
+	if port == 0 {
+		return fmt.Errorf("%s sent Homa port 0", peer.IP)
+	}
+	cs := conn.ConnectionState()
+	keys, err := cs.ExportKeyingMaterial(label, nil, 2*(keyLen+ivLen))
+	if err != nil {
+		return err
+	}
+	minor := 2
+	if hello[2] == 13 {
+		minor = 3
+	}
+	setKeys(peer.IP, port, minor == 3, keys[keyLen+ivLen:], keys[:keyLen+ivLen])
+	if _, err = conn.Write([]byte{1}); err != nil {
+		return err
+	}
+	fmt.Printf("keys for %s:%d, TLS 1.%d records\n", peer.IP, port, minor)
+	return nil
 }
 
 func serve(homaPort, tlsPort int) {
@@ -209,9 +232,15 @@ func serve(homaPort, tlsPort int) {
 		var src syscall.RawSockaddrInet4
 		// ra still lists the last message's bpages: they go back.
 		ra.ID = 0
-		n := sys(syscall.SYS_RECVMSG, msghdr(&src, nil, unsafe.Pointer(&ra), int(unsafe.Sizeof(ra))))
+		n, err := sys("recvmsg", syscall.SYS_RECVMSG, msghdr(&src, nil, unsafe.Pointer(&ra), int(unsafe.Sizeof(ra))))
+		if err != nil {
+			log.Print(err)
+			continue
+		}
 		sa := sendArgs{ID: ra.ID}
-		sys(syscall.SYS_SENDMSG, msghdr(&src, bpages(&ra, n), unsafe.Pointer(&sa), 0))
+		if _, err = sys("sendmsg", syscall.SYS_SENDMSG, msghdr(&src, bpages(&ra, n), unsafe.Pointer(&sa), 0)); err != nil {
+			log.Print(err)
+		}
 	}
 }
 
@@ -230,7 +259,9 @@ func client(server string, homaPort, tlsPort int, tls13 bool, size, n int) {
 		log.Fatal(err)
 	}
 	roots := x509.NewCertPool()
-	roots.AppendCertsFromPEM(pem)
+	if !roots.AppendCertsFromPEM(pem) {
+		log.Fatal("cert.pem: no certificate")
+	}
 	conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", server, tlsPort),
 		&tls.Config{RootCAs: roots, ServerName: "smt-server", MinVersion: tls.VersionTLS13})
 	if err != nil {
@@ -241,7 +272,9 @@ func client(server string, homaPort, tlsPort int, tls13 bool, size, n int) {
 	if tls13 {
 		hello[2] = 13
 	}
-	conn.Write(hello)
+	if _, err = conn.Write(hello); err != nil {
+		log.Fatal("TLS write: ", err)
+	}
 	cs := conn.ConnectionState()
 	keys, err := cs.ExportKeyingMaterial(label, nil, 2*(keyLen+ivLen))
 	if err != nil {
@@ -255,6 +288,8 @@ func client(server string, homaPort, tlsPort int, tls13 bool, size, n int) {
 
 	to := rawAddr(ip, homaPort)
 	req := make([]byte, size)
+	iov := []syscall.Iovec{{Base: &req[0]}}
+	iov[0].SetLen(size)
 	var ra recvArgs
 	var total time.Duration
 	for i := 0; i < n; i++ {
@@ -262,12 +297,15 @@ func client(server string, homaPort, tlsPort int, tls13 bool, size, n int) {
 			req[j] = byte(i + j)
 		}
 		t0 := time.Now()
-		iov := []syscall.Iovec{{Base: &req[0]}}
-		iov[0].SetLen(size)
 		var sa sendArgs
-		sys(syscall.SYS_SENDMSG, msghdr(to, iov, unsafe.Pointer(&sa), 0))
+		if _, err = sys("sendmsg", syscall.SYS_SENDMSG, msghdr(to, iov, unsafe.Pointer(&sa), 0)); err != nil {
+			log.Fatal(err)
+		}
 		ra.ID = 0
-		got := sys(syscall.SYS_RECVMSG, msghdr(nil, nil, unsafe.Pointer(&ra), int(unsafe.Sizeof(ra))))
+		got, err := sys("recvmsg", syscall.SYS_RECVMSG, msghdr(nil, nil, unsafe.Pointer(&ra), int(unsafe.Sizeof(ra))))
+		if err != nil {
+			log.Fatal(err)
+		}
 		total += time.Since(t0)
 		if got != size {
 			log.Fatalf("echo %d: %d bytes", i, got)
@@ -279,8 +317,12 @@ func client(server string, homaPort, tlsPort int, tls13 bool, size, n int) {
 			}
 		}
 	}
+	minor := 2
+	if tls13 {
+		minor = 3
+	}
 	fmt.Printf("%d echoes of %d B checked over SMT (TLS 1.%d records), mean RTT %.1f us\n",
-		n, size, map[bool]int{true: 3, false: 2}[tls13], float64(total.Microseconds())/float64(n))
+		n, size, minor, float64(total.Microseconds())/float64(n))
 }
 
 func main() {
@@ -296,6 +338,10 @@ func main() {
 	size := fs.Int("l", 1500, "message bytes (client)")
 	n := fs.Int("n", 1000, "RPCs (client)")
 	fs.Parse(os.Args[2:])
+	if fs.NArg() > 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
 	if os.Args[1] == "server" {
 		serve(*homaPort, *tlsPort)
 	} else if *server == "" || *size <= 0 || *n <= 0 {
