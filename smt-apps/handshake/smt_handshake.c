@@ -30,6 +30,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -100,21 +101,22 @@ static void set_keys(uint32_t addr, uint16_t port, int tls13,
 	const int opt[2] = { TLS_TX, TLS_RX };
 
 	for (int i = 0; i < 2; i++) {
+		struct tls12_crypto_info_aes_gcm_128 c = { 0 };
 		struct smt_aes_gcm_128_info info = { 0 };
-		struct tls12_crypto_info_aes_gcm_128 *c = &info.aes_gcm_128;
 
-		info.smt.peer_addr = addr;
-		info.smt.peer_port = port;
-		c->info.version = tls13 ? TLS_1_3_VERSION : TLS_1_2_VERSION;
-		c->info.cipher_type = TLS_CIPHER_AES_GCM_128;
-		memcpy(c->key, k[i], KEY_LEN);
-		memcpy(c->salt, k[i] + KEY_LEN, sizeof(c->salt));
+		c.info.version = tls13 ? TLS_1_3_VERSION : TLS_1_2_VERSION;
+		c.info.cipher_type = TLS_CIPHER_AES_GCM_128;
+		memcpy(c.key, k[i], KEY_LEN);
+		memcpy(c.salt, k[i] + KEY_LEN, sizeof(c.salt));
 		/* TLS 1.3 nonces use the whole IV; TLS 1.2 records carry an
 		 * explicit nonce, which must start out equal to rec_seq (0).
 		 */
 		if (tls13)
-			memcpy(c->iv, k[i] + KEY_LEN + sizeof(c->salt),
-			       sizeof(c->iv));
+			memcpy(c.iv, k[i] + KEY_LEN + sizeof(c.salt),
+			       sizeof(c.iv));
+		info.smt.peer_addr = addr;
+		info.smt.peer_port = port;
+		info.aes_gcm_128 = c; /* packed: assigned, not addressed */
 		if (setsockopt(homa_fd, SOL_TLS, opt[i], &info, sizeof(info)))
 			die("setsockopt(SOL_TLS)");
 	}
@@ -137,6 +139,7 @@ static void *handshakes(void *unused)
 	if (bind(lfd, (struct sockaddr *)&a, sizeof(a)) || listen(lfd, 16))
 		die("TLS listen");
 	for (;;) {
+		struct timeval limit = { .tv_sec = 10 };
 		struct sockaddr_in peer;
 		socklen_t len = sizeof(peer);
 		uint8_t hello[3], keys[KEYS_LEN], go = 1;
@@ -146,18 +149,23 @@ static void *handshakes(void *unused)
 
 		if (fd < 0)
 			continue;
+		/* A client that connects and stays silent can't hold up the rest. */
+		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof(limit));
 		ssl = SSL_new(ctx);
 		SSL_set_fd(ssl, fd);
-		if (SSL_accept(ssl) == 1 && SSL_read(ssl, hello, 3) == 3) {
-			memcpy(&port, hello, 2);
+		if (SSL_accept(ssl) == 1 && SSL_read(ssl, hello, 3) == 3 &&
+		    (memcpy(&port, hello, 2), port != 0)) {
 			derive(ssl, keys);
 			set_keys(peer.sin_addr.s_addr, port, hello[2] == 13,
 				 keys + KEY_LEN + IV_LEN, keys);
-			SSL_write(ssl, &go, 1);
-			printf("keys for %s:%d, TLS 1.%d records\n",
-			       inet_ntoa(peer.sin_addr), ntohs(port),
-			       hello[2] == 13 ? 3 : 2);
+			if (SSL_write(ssl, &go, 1) == 1)
+				printf("keys for %s:%d, TLS 1.%d records\n",
+				       inet_ntoa(peer.sin_addr), ntohs(port),
+				       hello[2] == 13 ? 3 : 2);
 		} else {
+			fprintf(stderr, "handshake with %s failed\n",
+				inet_ntoa(peer.sin_addr));
 			ERR_print_errors_fp(stderr);
 		}
 		SSL_shutdown(ssl);
