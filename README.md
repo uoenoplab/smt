@@ -1,5 +1,9 @@
 # SMT-NG: Secure Message Transport on Homa
 
+> [!CAUTION]
+> We rebase this branch onto upstream Homa `main` often and force-push it.
+> Be prepared to get reset.
+
 SMT encrypts Homa messages as TLS records inside the transport: every Homa
 message is sent as one or more TLS 1.2 or TLS 1.3 records (AES-GCM-128 or
 -256), sealed by the sender and authenticated by the receiver in the kernel,
@@ -9,8 +13,9 @@ Transport-Level Encryption for Datacenter Networks".
 
 This tree is upstream Homa ([PlatformLab/HomaModule](https://github.com/PlatformLab/HomaModule)
 `main`, ae45ada5 of 2026-10-20) with SMT built into the same module,
-`homa.ko`. Crypto is software only (the kernel's `gcm(aes)`); SMT's NIC
-offload is not part of this tree. Homa's own README is
+`homa.ko`. Crypto is software only (the kernel's `gcm(aes)`). SMT-NG with NIC
+TLS offload is on the [`smt-ng-tls-offload`](https://github.com/uoenoplab/smt/tree/smt-ng-tls-offload)
+branch. Homa's own README is
 [README-homa.md](README-homa.md).
 
 ## Build and load
