@@ -8,3 +8,5 @@ loaded/loaded_client
 loaded/loaded_server
 handshake-c/smt_handshake
 *.pem
+unloaded-golang/simple_*
+!unloaded-golang/go.mod
