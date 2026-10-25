@@ -9,4 +9,6 @@ loaded/loaded_server
 handshake-c/smt_handshake
 *.pem
 unloaded-golang/simple_*
+unloaded-rust/simple_*
+unloaded-rust/target
 !unloaded-golang/go.mod
