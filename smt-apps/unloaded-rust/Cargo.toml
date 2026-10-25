@@ -1,0 +1,15 @@
+[package]
+name = "smt_unloaded"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "simple_server"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[profile.release]
+strip = true

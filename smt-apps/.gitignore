@@ -7,7 +7,9 @@ unloaded/simple_server
 *.o
 loaded/loaded_client
 loaded/loaded_server
-handshake/smt_handshake
-handshake/*.pem
-handshake/smt_handshake_go
-!handshake/go/go.mod
+handshake-c/smt_handshake
+*.pem
+unloaded-golang/simple_*
+unloaded-rust/simple_*
+unloaded-rust/target
+!unloaded-golang/go.mod
