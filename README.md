@@ -1,5 +1,9 @@
 # SMT (secure-message-transport)
 
+> [!CAUTION]
+> We rebase this branch onto upstream Homa `main` often and force-push it.
+> Be prepared to get reset.
+
 Modern datacenter networks increasingly rely on high-bandwidth links and
 message-oriented transports such as Homa to support RPC-style workloads with
 low latency and high fan-out. At the same time, operators have widely deployed
@@ -20,9 +24,13 @@ architecture for message-based datacenter transports (e.g., Homa) that:
    and data center congestion control;
 3. remains compatible with existing commodity TLS/TCP hardware offloads.
 
-This repository is the **next-generation SMT implementation** built on the
-upstream Homa module tree. The original Homa README is preserved at
-[README-homa.md](README-homa.md).
+This branch is the **next-generation SMT implementation** (SMT-NG) built on
+the upstream Homa module tree, with TX TLS offload to NVIDIA mlx5 NICs
+(tested on BlueField-3). The offload needs the patched mlx5 driver on the
+[`smt-ng-mlx5e-patch`](https://github.com/uoenoplab/smt/tree/smt-ng-mlx5e-patch)
+branch. The software-only build is on the
+[`smt-ng`](https://github.com/uoenoplab/smt/tree/smt-ng) branch. The
+original Homa README is preserved at [README-homa.md](README-homa.md).
 
 The S&P'26 paper "Designing Transport-Level Encryption for Datacenter
 Networks" describes the design and evaluation of SMT in detail.
