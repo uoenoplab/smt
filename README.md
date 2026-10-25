@@ -1,9 +1,13 @@
 # SMT (secure-message-transport)
 
 > [!NOTE]
-> **A newer version of SMT (Linux) is under active development on the [`smt-ng`](https://github.com/uoenoplab/smt/tree/smt-ng) branch, with the corresponding mlx5e NIC driver patch on the [`smt-ng-mlx5e-patch`](https://github.com/uoenoplab/smt/tree/smt-ng-mlx5e-patch) branch.**
+> **A newer version of SMT (Linux), SMT-NG, is on two branches, both rebased regularly onto the latest upstream Homa:**
 >
-> **It is closely synced to the latest upstream Homa.**
+> - **[`smt-ng`](https://github.com/uoenoplab/smt/tree/smt-ng): software crypto only. Start here.**
+> - **[`smt-ng-tls-offload`](https://github.com/uoenoplab/smt/tree/smt-ng-tls-offload): adds TX TLS offload to NVIDIA mlx5 NICs, with the driver patch on the [`smt-ng-mlx5e-patch`](https://github.com/uoenoplab/smt/tree/smt-ng-mlx5e-patch) branch.**
+
+> [!CAUTION]
+> We rebase the SMT-NG branches onto upstream Homa `main` often and force-push them. Be prepared to get reset.
 
 Modern datacenter networks increasingly rely on high-bandwidth links and message-oriented transports such as Homa to support RPC-style workloads with low latency and high fan-out. At the same time, operators have widely deployed TLS over TCP to protect tenant traffic from eavesdropping and tampering in the network infrastructure.
 
