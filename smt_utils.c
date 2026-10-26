@@ -311,6 +311,40 @@ out:
 	return rc;
 }
 
+/**
+ * smt_ctx_delete() - Delete a socket's keys for one peer (SMT_KEY_DEL).
+ * RPCs already using them finish with them; a new RPC with the peer fails
+ * with ENOKEY, or uses the built-in key.
+ * @hsk:     The socket.
+ * @optval:  struct smt_info: the peer's address and port (network order).
+ * @optlen:  sizeof(struct smt_info).
+ * Return: 0, -ENOENT if the socket has no keys for the peer, or another
+ * negative errno.
+ */
+int smt_ctx_delete(struct homa_sock *hsk, sockptr_t optval,
+		   unsigned int optlen)
+{
+	struct smt_context *ctx = NULL;
+	struct smt_info peer;
+
+	if (optlen != sizeof(peer))
+		return -EINVAL;
+	if (copy_from_sockptr(&peer, optval, sizeof(peer)))
+		return -EFAULT;
+	if (!peer.peer_addr && !peer.peer_port)
+		return -EINVAL;
+	homa_sock_lock(hsk);
+	if (hsk->smt) {
+		ctx = smt_ctx_query(hsk, peer.peer_addr, peer.peer_port,
+				    smt_ctx_bucket(hsk, peer.peer_addr,
+						   peer.peer_port));
+		if (ctx)
+			smt_ctx_unhash(hsk, ctx);
+	}
+	homa_sock_unlock(hsk);
+	return ctx ? 0 : -ENOENT;
+}
+
 int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 			      unsigned int optlen, int tx)
 {

@@ -31,6 +31,13 @@ struct smt_info {
 	uint32_t local_addr;
 } __attribute__((packed));
 
+/* setsockopt(fd, SOL_TLS, SMT_KEY_DEL, &(struct smt_info){...},
+ * sizeof(struct smt_info)) deletes the socket's keys for that peer, both
+ * directions; ENOENT if it has none. RPCs that already use them finish with
+ * them. Above the kernel's SOL_TLS options.
+ */
+#define SMT_KEY_DEL 100
+
 /* setsockopt(fd, SOL_TLS, SMT_DEBUG_FIXED_KEY, &(struct tls_crypto_info){
  * TLS_1_2_VERSION or TLS_1_3_VERSION, TLS_CIPHER_AES_GCM_128 or _256 },
  * sizeof(struct tls_crypto_info)) gives the socket SMT's built-in key, in

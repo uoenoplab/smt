@@ -14,6 +14,9 @@ int smt_setsockopt(struct sock *sk, int level, int optname,
 	case TLS_RX:
 		rc = smt_ctx_setup(hsk, optval, optlen, optname == TLS_TX);
 		break;
+	case SMT_KEY_DEL:
+		rc = smt_ctx_delete(hsk, optval, optlen);
+		break;
 	case SMT_DEBUG_FIXED_KEY:
 		rc = smt_fixed_key_setup(hsk, optval, optlen);
 		break;

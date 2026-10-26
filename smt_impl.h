@@ -106,8 +106,9 @@ struct smt_replay_window {
 };
 
 /* A socket's keys for one peer. The socket's table holds a reference, and
- * so does each RPC that uses them: a replacing key takes the ctx out of
- * the table, and the RPCs already using it finish with its keys.
+ * so does each RPC that uses them: SMT_KEY_DEL and a replacing key take
+ * the ctx out of the table, and the RPCs already using it finish with its
+ * keys.
  */
 struct smt_context {
 	u8 tx_conf : 3;
@@ -231,6 +232,8 @@ extern struct workqueue_struct *smt_wq;
 
 int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 		  unsigned int optlen, int tx);
+int smt_ctx_delete(struct homa_sock *hsk, sockptr_t optval,
+		   unsigned int optlen);
 void smt_ctx_put(struct smt_context *ctx);
 int smt_fixed_key_setup(struct homa_sock *hsk, sockptr_t optval,
 			unsigned int optlen);

@@ -183,6 +183,29 @@ TEST_F(smt_utils, smt_ctx_install__replace_one_direction)
 	end_rpc(crpc2);
 }
 
+TEST_F(smt_utils, smt_ctx_delete)
+{
+	struct smt_info peer = {
+		.peer_addr = self->server_ip[0].s6_addr32[3],
+		.peer_port = htons(self->server_port)
+	};
+
+	EXPECT_EQ(ENOENT, -smt_setsockopt(&self->hsk.sock, SOL_TLS,
+					  SMT_KEY_DEL, KERNEL_SOCKPTR(&peer),
+					  sizeof(peer)));
+	ASSERT_EQ(0, set_keys(&self->hsk, self->server_ip, self->server_port,
+			      TLS_1_3_VERSION));
+	EXPECT_EQ(0, smt_setsockopt(&self->hsk.sock, SOL_TLS, SMT_KEY_DEL,
+				    KERNEL_SOCKPTR(&peer), sizeof(peer)));
+	EXPECT_EQ(ENOKEY, -PTR_ERR(new_client(&self->hsk,
+					      &self->server_addr)));
+	peer.peer_addr = 0;
+	peer.peer_port = 0;
+	EXPECT_EQ(EINVAL, -smt_setsockopt(&self->hsk.sock, SOL_TLS,
+					  SMT_KEY_DEL, KERNEL_SOCKPTR(&peer),
+					  sizeof(peer)));
+}
+
 TEST_F(smt_utils, smt_fixed_key_setup__needs_sysctl)
 {
 	EXPECT_EQ(EPERM, -set_fixed_key(&self->hsk, TLS_1_3_VERSION,
