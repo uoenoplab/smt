@@ -106,9 +106,9 @@ struct smt_replay_window {
 };
 
 /* A socket's keys for one peer. The socket's table holds a reference, and
- * so does each RPC that uses them: SMT_KEY_DEL and a replacing key take
- * the ctx out of the table, and the RPCs already using it finish with its
- * keys.
+ * so does each RPC that uses them: SMT_KEY_DEL, a replacing key and
+ * smt_ctx_gc take the ctx out of the table, and the RPCs already using it
+ * finish with its keys.
  */
 struct smt_context {
 	u8 tx_conf : 3;
@@ -126,6 +126,8 @@ struct smt_context {
 	struct smt_replay_window *replay;
 
 	refcount_t refs;
+	/* jiffies when an RPC last let go of it (smt_ctx_gc). */
+	unsigned long last_use;
 	struct work_struct free_work;
 	struct hlist_node hlist;
 };

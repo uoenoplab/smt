@@ -67,6 +67,9 @@
 #ifndef __STRIP__ /* See strip.py */
 #include "homa_grant.h"
 #endif /* See strip.py */
+#ifdef CONFIG_SMT
+#include "smt_plumbing.h"
+#endif
 
 /**
  * homa_timer_check_ack() - See if the ack for a server RPC is overdue;
@@ -193,6 +196,9 @@ void homa_timer(struct homa *homa)
 	struct homa_sock *hsk;
 	struct homa_rpc *rpc;
 	int rpc_count = 0;
+#ifdef CONFIG_SMT
+	bool smt_gc = smt_gc_due(homa);
+#endif
 
 #ifndef __STRIP__ /* See strip.py */
 	static u64 prev_grant_count;
@@ -261,6 +267,10 @@ void homa_timer(struct homa *homa)
 				break;
 			INC_METRIC(timer_reap_cycles, homa_clock() - rpc_start);
 		}
+#ifdef CONFIG_SMT
+		if (smt_gc)
+			smt_ctx_gc(hsk);
+#endif
 
 		if (list_empty(&hsk->active_rpcs) || hsk->shutdown)
 			continue;

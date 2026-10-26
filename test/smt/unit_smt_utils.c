@@ -206,6 +206,39 @@ TEST_F(smt_utils, smt_ctx_delete)
 					  sizeof(peer)));
 }
 
+TEST_F(smt_utils, smt_ctx_gc)
+{
+	struct homa_rpc *crpc;
+
+	self->homa.smt_key_idle_secs = 1;
+	ASSERT_EQ(0, set_keys(&self->hsk, self->server_ip, self->server_port,
+			      TLS_1_3_VERSION));
+	ASSERT_EQ(0, set_keys(&self->hsk, self->other_ip, self->server_port,
+			      TLS_1_3_VERSION));
+	crpc = new_client(&self->hsk, &self->server_addr);
+	ASSERT_FALSE(IS_ERR(crpc));
+
+	/* The ctx of a live RPC stays; the idle one goes. */
+	jiffies += 2 * HZ;
+	smt_ctx_gc(&self->hsk);
+	EXPECT_EQ(ENOKEY, -PTR_ERR(new_client(&self->hsk,
+					      &self->other_addr)));
+	end_rpc(crpc);
+	crpc = new_client(&self->hsk, &self->server_addr);
+	ASSERT_FALSE(IS_ERR(crpc));
+
+	/* The last RPC's end counts as a use. */
+	end_rpc(crpc);
+	smt_ctx_gc(&self->hsk);
+	crpc = new_client(&self->hsk, &self->server_addr);
+	ASSERT_FALSE(IS_ERR(crpc));
+	end_rpc(crpc);
+	jiffies += 2 * HZ;
+	smt_ctx_gc(&self->hsk);
+	EXPECT_EQ(ENOKEY, -PTR_ERR(new_client(&self->hsk,
+					      &self->server_addr)));
+}
+
 TEST_F(smt_utils, smt_fixed_key_setup__needs_sysctl)
 {
 	EXPECT_EQ(EPERM, -set_fixed_key(&self->hsk, TLS_1_3_VERSION,
@@ -233,6 +266,20 @@ TEST_F(smt_utils, smt_fixed_key_setup__clone_for_each_peer)
 					 TLS_CIPHER_AES_GCM_256));
 	end_rpc(crpc1);
 	end_rpc(crpc2);
+}
+TEST_F(smt_utils, smt_fixed_key_setup__gc_keeps_it)
+{
+	struct homa_rpc *crpc;
+
+	self->homa.debug_only_smt_fixed_key = 1;
+	self->homa.smt_key_idle_secs = 1;
+	ASSERT_EQ(0, set_fixed_key(&self->hsk, TLS_1_3_VERSION,
+				   TLS_CIPHER_AES_GCM_128));
+	jiffies += 2 * HZ;
+	smt_ctx_gc(&self->hsk);
+	crpc = new_client(&self->hsk, &self->server_addr);
+	ASSERT_FALSE(IS_ERR(crpc));
+	end_rpc(crpc);
 }
 
 TEST_F(smt_utils, smt_rpc_ctx_init__record_framing)

@@ -90,6 +90,9 @@ int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk, struct homa_rpc *rpc)
 
 void smt_rpc_release(struct homa_rpc *rpc)
 {
-	smt_ctx_put(rpc->smt.ctx);
+	struct smt_context *ctx = rpc->smt.ctx;
+
+	ctx->last_use = jiffies;
+	smt_ctx_put(ctx);
 	rpc->smt.ctx = NULL;
 }

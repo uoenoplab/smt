@@ -505,6 +505,12 @@ struct homa {
 	int smt_record_segs;
 
 	/**
+	 * @smt_key_idle_secs: smt_ctx_gc deletes a socket's keys for a peer
+	 * after this many seconds without an RPC. 0 (default): never.
+	 */
+	int smt_key_idle_secs;
+
+	/**
 	 * @debug_only_smt_fixed_key: nonzero lets a socket take SMT's
 	 * built-in key for all peers with setsockopt(SMT_DEBUG_FIXED_KEY), so
 	 * no handshake is needed (for debugging and measurements: the key is

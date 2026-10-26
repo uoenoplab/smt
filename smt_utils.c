@@ -95,6 +95,7 @@ static struct smt_context *smt_ctx_alloc(u32 peer_addr, u16 peer_port,
 	ctx->peer_addr = peer_addr;
 	ctx->peer_port = peer_port;
 	refcount_set(&ctx->refs, 1);
+	ctx->last_use = jiffies;
 	INIT_WORK(&ctx->free_work, smt_ctx_free);
 	return ctx;
 }
@@ -343,6 +344,61 @@ int smt_ctx_delete(struct homa_sock *hsk, sockptr_t optval,
 	}
 	homa_sock_unlock(hsk);
 	return ctx ? 0 : -ENOENT;
+}
+
+/**
+ * smt_gc_due() - Whether the Homa timer calls smt_ctx_gc for each socket
+ * on this tick: about once a second, when net.homa.smt_key_idle_secs is
+ * set. Called by the timer thread only.
+ * @homa:  Overall data about the Homa protocol implementation.
+ * Return: true if it is time.
+ */
+bool smt_gc_due(struct homa *homa)
+{
+	static unsigned long next;
+
+	if (!READ_ONCE(homa->smt_key_idle_secs) || time_before(jiffies, next))
+		return false;
+	next = jiffies + HZ;
+	return true;
+}
+
+/**
+ * smt_ctx_gc() - Delete the keys of a socket that no RPC has used for
+ * net.homa.smt_key_idle_secs (see smt_gc_due).
+ * @hsk:  The socket; not locked.
+ */
+void smt_ctx_gc(struct homa_sock *hsk)
+{
+	unsigned long idle = HZ *
+		(unsigned long)READ_ONCE(hsk->homa->smt_key_idle_secs);
+	struct smt_context *ctx;
+	struct hlist_node *tmp;
+	int i;
+
+	if (!hsk->smt)
+		return;
+	/* A dead RPC holds its ctx until it is reaped, and Homa reaps
+	 * lazily: an idle socket can keep its last RPCs for good.
+	 */
+	while (homa_rpc_reap(hsk))
+		;
+	homa_sock_lock(hsk);
+	if (hsk->shutdown || !hsk->smt)
+		goto unlock;
+	for (i = 0; i < HOMA_SERVER_RPC_BUCKETS; i++)
+		hlist_for_each_entry_safe(ctx, tmp,
+					  &SMT_SOCK(hsk)->ctx_buckets[i], hlist)
+			/* With the socket locked no RPC can take it, so the
+			 * table's reference alone means that no RPC uses it.
+			 * RPCs use clones of the built-in key, which stays.
+			 */
+			if (ctx != SMT_SOCK(hsk)->reuse_ctx &&
+			    refcount_read(&ctx->refs) == 1 &&
+			    time_after(jiffies, ctx->last_use + idle))
+				smt_ctx_unhash(hsk, ctx);
+unlock:
+	homa_sock_unlock(hsk);
 }
 
 int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,

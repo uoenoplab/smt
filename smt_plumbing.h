@@ -51,6 +51,8 @@ extern int smt_rpc_alloc_client_sock_lock(struct homa_sock *hsk,
 					  struct homa_rpc *rpc);
 
 extern void smt_rpc_release(struct homa_rpc *rpc);
+extern bool smt_gc_due(struct homa *homa);
+extern void smt_ctx_gc(struct homa_sock *hsk);
 
 /* smt_outgoing.c */
 

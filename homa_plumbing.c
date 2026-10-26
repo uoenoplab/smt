@@ -444,6 +444,13 @@ struct ctl_table homa_ctl_table[] = {
 		.proc_handler	= homa_dointvec
 	},
 	{
+		.procname	= "smt_key_idle_secs",
+		.data		= OFFSET(smt_key_idle_secs),
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= homa_dointvec
+	},
+	{
 		.procname	= "debug_only_smt_fixed_key",
 		.data		= OFFSET(debug_only_smt_fixed_key),
 		.maxlen		= sizeof(int),
