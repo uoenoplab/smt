@@ -143,7 +143,9 @@ struct smt_sw_crypto {
 struct smt_sw_context {
 	struct list_head crypto_list;
 	spinlock_t crypto_list_lock;
-	/* The ctx that allocated it plus the ctxs that replace it and keep it. */
+	/* The ctx that allocated it, the ctxs that replace that ctx but keep
+	 * its key, and the clones of the built-in key.
+	 */
 	refcount_t refs;
 };
 
@@ -214,6 +216,8 @@ static inline void smt_nonce(u8 *nonce, const u8 *base, u64 seq)
 
 struct smt_sock {
 	struct hlist_head ctx_buckets[HOMA_SERVER_RPC_BUCKETS];
+	/* The built-in key's ctx (peer 0/0), or NULL. */
+	struct smt_context *reuse_ctx;
 };
 
 #define SMT_SOCK(hsk) ((struct smt_sock *)(hsk)->smt)
@@ -228,6 +232,8 @@ extern struct workqueue_struct *smt_wq;
 int smt_ctx_setup(struct homa_sock *hsk, sockptr_t optval,
 		  unsigned int optlen, int tx);
 void smt_ctx_put(struct smt_context *ctx);
+int smt_fixed_key_setup(struct homa_sock *hsk, sockptr_t optval,
+			unsigned int optlen);
 
 int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc);
 

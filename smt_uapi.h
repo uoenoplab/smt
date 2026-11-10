@@ -22,13 +22,25 @@ extern "C"
  * @smt_info: the peer a key is for, in network order: its address and Homa
  * port. A setsockopt(SOL_TLS, TLS_TX or TLS_RX) for a peer that has a key
  * replaces it; RPCs that already use the old key finish with it. Both 0
- * is refused. local_addr is not used.
+ * is refused: only SMT_DEBUG_FIXED_KEY gives a key for every peer.
+ * local_addr is not used.
  */
 struct smt_info {
 	uint32_t peer_addr;
 	uint16_t peer_port;
 	uint32_t local_addr;
 } __attribute__((packed));
+
+/* setsockopt(fd, SOL_TLS, SMT_DEBUG_FIXED_KEY, &(struct tls_crypto_info){
+ * TLS_1_2_VERSION or TLS_1_3_VERSION, TLS_CIPHER_AES_GCM_128 or _256 },
+ * sizeof(struct tls_crypto_info)) gives the socket SMT's built-in key, in
+ * both directions, for every peer without a key of its own. The key is in
+ * the source and protects nothing: for debugging and measurements only.
+ * EPERM unless the host allows it (net.homa.debug_only_smt_fixed_key 1).
+ * A socket keeps the version and the cipher of its first built-in key:
+ * another version or cipher fails with EINVAL.
+ */
+#define SMT_DEBUG_FIXED_KEY 101
 
 struct smt_aes_gcm_128_info {
 	struct smt_info smt;

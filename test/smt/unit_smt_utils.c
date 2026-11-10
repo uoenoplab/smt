@@ -34,6 +34,15 @@ static int set_keys(struct homa_sock *hsk, struct in6_addr *ip, int port,
 	       set_key(hsk, ip, port, TLS_RX, version, 2);
 }
 
+static int set_fixed_key(struct homa_sock *hsk, u16 version, u16 cipher)
+{
+	struct tls_crypto_info info = {.version = version,
+				       .cipher_type = cipher};
+
+	return smt_setsockopt(&hsk->sock, SOL_TLS, SMT_DEBUG_FIXED_KEY,
+			      KERNEL_SOCKPTR(&info), sizeof(info));
+}
+
 FIXTURE(smt_utils) {
 	struct homa homa;
 	struct homa_net *hnet;
@@ -170,6 +179,35 @@ TEST_F(smt_utils, smt_ctx_install__replace_one_direction)
 	EXPECT_EQ(3, new->crypto_send.aes_gcm_128.key[0]);
 	EXPECT_EQ(2, new->crypto_recv.aes_gcm_128.key[0]);
 	EXPECT_EQ(1, old->crypto_send.aes_gcm_128.key[0]);
+	end_rpc(crpc1);
+	end_rpc(crpc2);
+}
+
+TEST_F(smt_utils, smt_fixed_key_setup__needs_sysctl)
+{
+	EXPECT_EQ(EPERM, -set_fixed_key(&self->hsk, TLS_1_3_VERSION,
+					TLS_CIPHER_AES_GCM_128));
+	EXPECT_EQ(NULL, self->hsk.smt);
+}
+TEST_F(smt_utils, smt_fixed_key_setup__clone_for_each_peer)
+{
+	struct homa_rpc *crpc1, *crpc2;
+
+	self->homa.debug_only_smt_fixed_key = 1;
+	ASSERT_EQ(0, set_fixed_key(&self->hsk, TLS_1_2_VERSION,
+				   TLS_CIPHER_AES_GCM_256));
+	crpc1 = new_client(&self->hsk, &self->server_addr);
+	crpc2 = new_client(&self->hsk, &self->other_addr);
+	ASSERT_FALSE(IS_ERR(crpc1));
+	ASSERT_FALSE(IS_ERR(crpc2));
+	EXPECT_NE(SMT_RPC(crpc1)->ctx, SMT_RPC(crpc2)->ctx);
+	EXPECT_EQ(TLS_CIPHER_AES_GCM_256,
+		  SMT_RPC(crpc2)->ctx->crypto_send.info.cipher_type);
+	EXPECT_EQ('S', SMT_RPC(crpc2)->ctx->crypto_send.aes_gcm_256.key[0]);
+
+	/* A socket keeps the version and cipher of its built-in key. */
+	EXPECT_EQ(EINVAL, -set_fixed_key(&self->hsk, TLS_1_3_VERSION,
+					 TLS_CIPHER_AES_GCM_256));
 	end_rpc(crpc1);
 	end_rpc(crpc2);
 }

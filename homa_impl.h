@@ -503,6 +503,15 @@ struct homa {
 	 * allow. A GSO packet carries as many whole records as fit.
 	 */
 	int smt_record_segs;
+
+	/**
+	 * @debug_only_smt_fixed_key: nonzero lets a socket take SMT's
+	 * built-in key for all peers with setsockopt(SMT_DEBUG_FIXED_KEY), so
+	 * no handshake is needed (for debugging and measurements: the key is
+	 * in the source). 0 (default): that setsockopt fails with EPERM, and
+	 * keys come only from setsockopt(TLS_TX / TLS_RX) after a handshake.
+	 */
+	int debug_only_smt_fixed_key;
 #endif /* CONFIG_SMT */
 };
 

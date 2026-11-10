@@ -14,6 +14,9 @@ int smt_setsockopt(struct sock *sk, int level, int optname,
 	case TLS_RX:
 		rc = smt_ctx_setup(hsk, optval, optlen, optname == TLS_TX);
 		break;
+	case SMT_DEBUG_FIXED_KEY:
+		rc = smt_fixed_key_setup(hsk, optval, optlen);
+		break;
 	default:
 		rc = -ENOPROTOOPT;
 		break;
@@ -23,7 +26,7 @@ int smt_setsockopt(struct sock *sk, int level, int optname,
 
 int smt_sock_init(struct homa_sock *hsk, struct homa *homa)
 {
-	/* Keys come from setsockopt (smt_ctx_setup). */
+	/* Keys come from setsockopt (smt_ctx_setup, smt_fixed_key_setup). */
 	hsk->smt = NULL;
 	return 0;
 }

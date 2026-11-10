@@ -443,6 +443,13 @@ struct ctl_table homa_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= homa_dointvec
 	},
+	{
+		.procname	= "debug_only_smt_fixed_key",
+		.data		= OFFSET(debug_only_smt_fixed_key),
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= homa_dointvec
+	},
 #endif /* CONFIG_SMT */
 };
 #endif /* See strip.py */

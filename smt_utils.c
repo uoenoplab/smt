@@ -78,13 +78,14 @@ void smt_ctx_put(struct smt_context *ctx)
 /* A ctx for a peer, without keys, holding the reference of the socket's
  * table; NULL if out of memory.
  */
-static struct smt_context *smt_ctx_alloc(u32 peer_addr, u16 peer_port)
+static struct smt_context *smt_ctx_alloc(u32 peer_addr, u16 peer_port,
+					 gfp_t gfp)
 {
-	struct smt_context *ctx = kmem_cache_zalloc(smt_ctx_kmem, GFP_KERNEL);
+	struct smt_context *ctx = kmem_cache_zalloc(smt_ctx_kmem, gfp);
 
 	if (!ctx)
 		return NULL;
-	ctx->replay = kzalloc(sizeof(*ctx->replay), GFP_KERNEL);
+	ctx->replay = kzalloc(sizeof(*ctx->replay), gfp);
 	if (!ctx->replay) {
 		kmem_cache_free(smt_ctx_kmem, ctx);
 		return NULL;
@@ -104,7 +105,45 @@ static struct smt_context *smt_ctx_alloc(u32 peer_addr, u16 peer_port)
 static void smt_ctx_unhash(struct homa_sock *hsk, struct smt_context *ctx)
 {
 	hlist_del(&ctx->hlist);
+	if (SMT_SOCK(hsk)->reuse_ctx == ctx)
+		SMT_SOCK(hsk)->reuse_ctx = NULL;
 	smt_ctx_put(ctx);
+}
+
+/* A ctx with the built-in key (SMT_DEBUG_FIXED_KEY) for a peer without
+ * keys of its own, added to @bucket; NULL if the socket has no built-in
+ * key.
+ */
+static struct smt_context *smt_ctx_clone(struct homa_sock *hsk,
+					 const uint32_t peer_addr,
+					 const uint16_t peer_port,
+					 struct hlist_head *bucket)
+{
+	struct smt_context *ctx, *reuse_ctx = SMT_SOCK(hsk)->reuse_ctx;
+
+	if (!reuse_ctx)
+		return NULL;
+	ctx = smt_ctx_alloc(peer_addr, peer_port, GFP_ATOMIC);
+	if (!ctx) {
+		smt_pr_err("%s smt_ctx_kmem alloc failed\n", __func__);
+		return ERR_PTR(-ENOMEM);
+	}
+	ctx->tx_conf = reuse_ctx->tx_conf;
+	ctx->rx_conf = reuse_ctx->rx_conf;
+	ctx->crypto_send = reuse_ctx->crypto_send;
+	ctx->crypto_recv = reuse_ctx->crypto_recv;
+
+	/* This runs in atomic context (softirq for a server RPC), where no
+	 * tfm can be allocated, and the clone has the built-in key: share
+	 * the SW crypto pools of the built-in key.
+	 */
+	if (ctx->tx_conf == SMT_SW)
+		ctx->offload_tx = smt_sw_ctx_get(reuse_ctx->offload_tx);
+	if (ctx->rx_conf == SMT_SW)
+		ctx->offload_rx = smt_sw_ctx_get(reuse_ctx->offload_rx);
+
+	hlist_add_head(&ctx->hlist, bucket);
+	return ctx;
 }
 
 static struct smt_context *smt_ctx_query(struct homa_sock *hsk,
@@ -203,7 +242,9 @@ static void smt_ctx_carry(struct smt_context *nctx, struct smt_context *old,
  * A key that replaces one goes into a new ctx, with the other direction's
  * key: the RPCs already using the old ctx finish with its keys. May sleep.
  * @hsk:   The socket.
- * @peer:  The peer's address and port (network order).
+ * @peer:  The peer's address and port (network order). Both 0 only for
+ *         the built-in key (smt_fixed_key_setup), which serves every peer
+ *         without a key of its own.
  * @info:  The key, version and cipher already checked.
  * @tx:    Nonzero for the sending direction.
  * Return: 0 or a negative errno.
@@ -219,7 +260,7 @@ static int smt_ctx_install(struct homa_sock *hsk, const struct smt_info *peer,
 
 	/* Everything that may sleep happens before taking the socket lock. */
 	smt = kzalloc(sizeof(*smt), GFP_KERNEL);
-	nctx = smt_ctx_alloc(peer->peer_addr, peer->peer_port);
+	nctx = smt_ctx_alloc(peer->peer_addr, peer->peer_port, GFP_KERNEL);
 	drop = nctx;
 	if (!smt || !nctx)
 		goto out;
@@ -255,6 +296,8 @@ static int smt_ctx_install(struct homa_sock *hsk, const struct smt_info *peer,
 	if (ctx)
 		smt_ctx_unhash(hsk, ctx);
 	hlist_add_head(&nctx->hlist, bucket);
+	if (!peer->peer_addr && !peer->peer_port)
+		SMT_SOCK(hsk)->reuse_ctx = nctx;
 	drop = NULL;
 
 unlock:
@@ -369,6 +412,63 @@ out:
 	return rc;
 }
 
+/* The built-in key of SMT_DEBUG_FIXED_KEY, for measuring without a
+ * handshake: it is in the source, so it protects nothing. AES-GCM-128 takes
+ * the first 16 bytes.
+ */
+static const u8 smt_fixed_key[TLS_CIPHER_AES_GCM_256_KEY_SIZE] = {
+	0x53, 0x4d, 0x54, 0x2d, 0x4e, 0x47, 0x20, 0x74,
+	0x65, 0x73, 0x74, 0x20, 0x6b, 0x65, 0x79, 0x21,	/* "SMT-NG test key!" */
+	0x53, 0x4d, 0x54, 0x2d, 0x4e, 0x47, 0x20, 0x74,
+	0x65, 0x73, 0x74, 0x20, 0x6b, 0x65, 0x79, 0x21,	/* twice */
+};
+
+/**
+ * smt_fixed_key_setup() - SMT_DEBUG_FIXED_KEY: give @hsk the built-in key
+ * in both directions for every peer without a key of its own, salt and IV
+ * 0. May sleep.
+ * @hsk:     The socket.
+ * @optval:  struct tls_crypto_info: TLS_1_2_VERSION or TLS_1_3_VERSION,
+ *           TLS_CIPHER_AES_GCM_128 or TLS_CIPHER_AES_GCM_256.
+ * @optlen:  sizeof(struct tls_crypto_info).
+ * Return: 0, -EPERM unless net.homa.debug_only_smt_fixed_key is set, or
+ * another negative errno: -EINVAL for a version or cipher other than that
+ * of the socket's built-in key (smt_ctx_init).
+ */
+int smt_fixed_key_setup(struct homa_sock *hsk, sockptr_t optval,
+			unsigned int optlen)
+{
+	static const struct smt_info any_peer;
+	union tls_crypto_context info = {};
+	int rc;
+
+	if (!READ_ONCE(hsk->homa->debug_only_smt_fixed_key))
+		return -EPERM;
+	if (optlen != sizeof(info.info))
+		return -EINVAL;
+	if (copy_from_sockptr(&info.info, optval, sizeof(info.info)))
+		return -EFAULT;
+	if (info.info.version != TLS_1_2_VERSION &&
+	    info.info.version != TLS_1_3_VERSION)
+		return -EINVAL;
+	switch (info.info.cipher_type) {
+	case TLS_CIPHER_AES_GCM_128:
+		memcpy(info.aes_gcm_128.key, smt_fixed_key,
+		       TLS_CIPHER_AES_GCM_128_KEY_SIZE);
+		break;
+	case TLS_CIPHER_AES_GCM_256:
+		memcpy(info.aes_gcm_256.key, smt_fixed_key,
+		       TLS_CIPHER_AES_GCM_256_KEY_SIZE);
+		break;
+	default:
+		return -EINVAL;
+	}
+	rc = smt_ctx_install(hsk, &any_peer, &info, 1);
+	if (!rc)
+		rc = smt_ctx_install(hsk, &any_peer, &info, 0);
+	return rc;
+}
+
 int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 {
 	uint32_t addr;
@@ -386,11 +486,13 @@ int smt_rpc_ctx_init(struct homa_sock *hsk, struct homa_rpc *rpc)
 	bucket = smt_ctx_bucket(hsk, addr, port);
 
 	ctx = smt_ctx_query(hsk, addr, port, bucket);
-	/* No key for this peer: a socket with keys talks with no peer in
-	 * clear.
+	if (ctx == NULL)
+		ctx = smt_ctx_clone(rpc->hsk, addr, port, bucket);
+	/* NULL: no key for this peer (and no built-in key to clone). A
+	 * socket with keys talks with no peer in clear.
 	 */
-	if (!ctx) {
-		rc = -ENOKEY;
+	if (IS_ERR_OR_NULL(ctx)) {
+		rc = ctx ? PTR_ERR(ctx) : -ENOKEY;
 		goto out;
 	}
 #ifndef CONFIG_SMT_NOCRYPTO
