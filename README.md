@@ -1,199 +1,227 @@
-This repo contains an implementation of the Homa transport protocol as a Linux kernel module.
+# SMT-NG: Secure Message Transport on Homa
 
-- For more information on Homa in general, see the [Homa
-  Wiki](https://homa-transport.atlassian.net/wiki/spaces/HOMA).
+> [!CAUTION]
+> We rebase this branch onto upstream Homa `main` often and force-push it.
+> Be prepared to get reset.
 
-- More information about this implementation and its performance are available in
-  the paper [A Linux Kernel Implementation of the Homa Transport
-  Protocol](https://www.usenix.org/system/files/atc21-ousterhout.pdf),
-  which appeared in the USENIX Annual Technical Conference in July, 2021.
+![The client and the server set up keys in user space; then the client sends a message, SMT seals it as TLS records in Homa, and the server authenticates and decrypts it](smt-apps/figures/smt-wire.svg)
 
-- A synopsis of the protocol implemented by this module is available in
-  [protocol.md](https://github.com/PlatformLab/HomaModule/blob/main/protocol.md).
+- SMT encrypts Homa messages as TLS records inside the transport.
+- The sender seals each message as one or more TLS 1.2 or TLS 1.3 records,
+  with AES-GCM-128 or AES-GCM-256. The receiver authenticates each record in
+  the kernel.
+- Applications keep the message API and the parallelism of Homa.
+- Paper:
+  [Designing Transport-Level Encryption for Datacenter Networks](https://github.com/uoenoplab/smt/blob/main/smt-oakland26.pdf)
+  (IEEE S&P 2026). It describes the design and an evaluation of the first
+  version.
 
-- As of August 2020, Homa has complete functionality for running real applications,
-  and its tail latency is more than 10x better than TCP for all workloads I have
-  measured (Homa's 99-th percentile latency is usually better than TCP's mean
-  latency). Here is a list of the most significant functionality that is still
-  missing:
-  - The incast optimization from Section 3.6 of the SIGCOMM paper has not
-    been implemented yet. If you would like to test Homa under large incasts,
-    let me know and I will implement this feature.
+This branch:
 
-- Please contact me if you have any problems using this repo; I'm happy to
-  provide advice and support.
+- Upstream Homa ([PlatformLab/HomaModule](https://github.com/PlatformLab/HomaModule)
+  `main`, 07ce63ef of 2026-11-07), with SMT in the same module, `homa.ko`.
+- Software crypto only: the `gcm(aes)` of the kernel.
+- SMT-NG with NIC TLS offload is on the
+  [`smt-ng-tls-offload`](https://github.com/uoenoplab/smt/tree/smt-ng-tls-offload)
+  branch.
+- The README of Homa is [README-homa.md](README-homa.md).
 
-- The head is known to work under Linux 6.17.8; this is where current
-  development occurs. In addition, the head has recently been updated to
-  compile under Linux 7.0.14 (these changes are not actively supported, so
-  they may bit-rot over time; please submit fixes if that happens).
-  The branches `rhel8` and `rhel9.5` are known to
-  run on the corresdponding versions of Red Hat Enterprise Linux and are
-  relatively up to date. They are "officially supported" in that I plan to
-  backport changes from the main branch to them.
+## Quick start
 
-- Other versions of Linux have not been tested and may require code changes
-  (typically this is easy to do). If you get Homa working on some other
-  version, please submit a pull request with the required code changes (I'll
-  try to include them, like the 7.0.14 changes, if that can be done in a
-  reasonably clean way).
+```
+make                    # homa.ko with SMT
+sudo insmod homa.ko
+sudo sysctl net.homa.debug_only_smt_fixed_key=1   # allow the built-in key, for debugging only
+make -C smt-apps/unloaded
+# server
+smt-apps/unloaded/simple_server --proto smt -p 2000 -l 1500
+# client: 1000 echoes, every byte checked
+smt-apps/unloaded/simple_client --proto smt -a <server> -p 2000 -l 1500 -n 1000 -c
+```
 
-- In the past, Homa has run under several earlier versions of Linux. There is
-  a separate branch for each of these older versions, with names such as
-  linux_4.15.18. Older branches are generally out of date feature-wise:
-  recent commits have not been backported to them.
+- Tested on Linux 6.17.
+- `make NO_CONFIG_SMT=1` builds plain Homa. So does `make __STRIP__=1`.
+- SMT supports IPv4 only, with the DF bit set (`net.ipv4.ip_no_pmtu_disc` 0, the default). The receiver finds the place of a segment in its record from the IP id. The IP id counts the segments of a GSO packet from 0 only in DF packets.
+- These programs have no handshake. They give their SMT sockets the
+  built-in key, which all peers share and which protects nothing.
+  [SMT APIs](smt-design.md#smt-apis) tells how an application gets its keys.
 
-- To build and install Homa, see instructions in `INSTALL.md`.
+## Kernel interface and features
 
-- A collection of man pages is available in the "man" subdirectory. The API for
-  Homa is different from TCP sockets.
+| interface | what it does |
+|---|---|
+| `setsockopt(fd, SOL_TLS, TLS_TX or TLS_RX, ...)` | installs or replaces the key of one direction for one peer ([SMT APIs](smt-design.md#smt-apis)) |
+| `setsockopt(fd, SOL_TLS, SMT_KEY_DEL, ...)` | deletes the keys of one peer |
+| `setsockopt(fd, SOL_TLS, SMT_DEBUG_FIXED_KEY, ...)` | debugging and benchmarks only: gives the socket the built-in key for all peers, with TLS 1.2 or 1.3 and AES-GCM-128 or -256 |
+| sysctl `net.homa.smt_key_idle_secs` | deletes the keys of a peer after this many seconds without an RPC. 0 (default): never |
+| sysctl `net.homa.debug_only_smt_fixed_key` | 1 allows `SMT_DEBUG_FIXED_KEY` on this host. 0 (default): it fails with EPERM |
+| sysctl `net.homa.smt_record_segs` | the most segments in one record that the host sends. 0 (default): as many as fit in 16 KB of data and 20 segments |
 
-- Related work that you may find useful:
-  - [Preliminary support for using Homa with gRPC](https://github.com/PlatformLab/grpc_homa)
-  - [A Go client that works with this module](https://github.com/dpeckett/go-homa)
+- Records: TLS 1.2 or TLS 1.3, with AES-GCM-128 or AES-GCM-256. The key
+  structs wrap those of kTLS.
+- A record fills whole segments, and one TSO/GSO packet carries one or more
+  whole records. The receiver authenticates each record independently
+  ([On the wire](smt-design.md#on-the-wire)).
+- The nonce of a record comes from its RPC id and its position in the
+  message. The RPCs share no record counter, so they stay independent, as
+  in Homa.
+- Keys apply to one peer (IPv4 address and Homa port). A socket with keys
+  refuses RPCs with a peer that has no keys. Only the built-in key of
+  `SMT_DEBUG_FIXED_KEY` serves all peers, for debugging and benchmarks.
+- An application can replace and delete keys. The RPCs that use a key
+  when it is replaced or deleted finish with it.
+- Replay guard: a server drops a request for an RPC that it authenticated
+  before ([Security design](smt-design.md#security-design)).
+- Crypto: software AES-GCM through the crypto API of the kernel
+  (`gcm(aes)`).
+- [Build switches](#build-switches) turn the performance features on or off.
 
-- NIC support: Homa is known to work with the following NICs:
-  - Mellanox ConnectX-4, ConnectX-5, and ConnectX-6
-  - Intel E810 series (ice)
-  Please let me know if you find other NICs that work (or don't work).
+## Layout
 
-- The subdirectory "test" contains unit tests, which you can run by typing
-  "make" in that subdirectory.
+| path | contents |
+|---|---|
+| `homa_*` | upstream Homa, with the changes in [What SMT changes in Homa's files](#what-smt-changes-in-homas-files) |
+| `smt_outgoing.c`, `smt_incoming.c` | the record layer: lay out and seal the records of a message, authenticate and decrypt them, replay guard |
+| `smt_utils.c`, `smt_sw.c` | the keys of each peer, and the AES-GCM requests to the crypto API of the kernel |
+| `smt_plumbing.c`, `smt_*.h` | the calls from Homa into SMT, and the shared definitions |
+| `smt_uapi.h`, `smt_uapi.c` | the setsockopt interface. `smt_uapi.c` sets the fixed test keys for the apps |
+| `smt-apps/` | the [user-space apps](#user-space-apps) |
+| `test/smt/` | the unit tests of SMT: Homa built with `CONFIG_SMT`, the mocks of Homa's unit tests, and no AES-GCM. `make -C test/smt test` |
+| `smt-apps/figures/` | the plots of the [evaluation](#evaluation), and the [animation of SMT on the wire](smt-design.md#on-the-wire) (`smt-wire.svg`, which `smt-wire.py` draws, and the interactive `smt-wire.html`) |
+| `smt-design.md` | the key interface, the wire format and the security design of SMT |
+| `README-homa.md` | the README of Homa |
 
-- The subdirectory "util" contains an assortment of utility programs that
-  you may find useful in exercising and benchmarking Homa. Compile them by typing
-  `make` in that subdirectory. Here are some examples of benchmarks you might
-  find useful:
-  - The `cp_node` program can be run stand-alone on clients and servers to run
-    simple benchmarks. For a simple latency test, run `cp_node server` on node1 of
-    the cluster, then run `cp_node client` on node 0. The client will send
-    continuous back-to-back short requests to the server and output timing
-    information. Or, run `cp_node client --workload 500000` on the client:
-    this will send continuous 500 KB messages for a simple througput test.
-    Type `cp_node --help` to learn about other ways you can use this program.
-  - The `cp_bench` script uses `cp_node` to run any of a variety of
-    benchmarks; it was used to generate the data for Figures 3 and 4 in
-    the Homa ATC paper. Here is an example command:
-    ```
-    cp_bench -n 10 -w w4 -b 20 -B homa_vs_tcp
-    ```
-    The `-B` option selects one of several benchmarks; `homa_vs_tcp`
-    will run both Homa and TCP on the same workload and generate graphs
-    comparing them.
-    When invoked on node0, this will run the W4 workload
-    from the ATC paper,
-    running on 10 nodes and generating 20 Gbps of offered load (80%
-    network load on a 25 Gbps network). Type `cp_bench --help` for
-    information on all available options.
+## User-space apps
 
- - Some additional tools you might find useful:
-   - Homa collects various metrics about its behavior, such as the size
-     distribution of incoming messages. You can access these through the
-     file `/proc/net/homa_metrics`. The script `util/metrics.py` will
-     collect metrics and print out all the numbers that have changed
-     since its last run.
-   - Homa exports a collection of configuration parameters through the
-     sysctl mechanism. For details, see the man page `homa.7`.
+Run `make` in each directory of [smt-apps](smt-apps). The Go and Rust
+programs need their toolchains. `make cert` in `handshake-c` makes `ca.pem`
+and a certificate for each end. The handshake programs read these files
+from the directory that they run in.
 
-## Significant changes
-- September 2026: Protocol change in granting mechanism. Messages that
-  require grants are now completely scheduled (no initial unscheduled
-  packets are sent). A new packet type, START_MSG, has been introduced
-  for these messages to announce themselves to the recipient.
-- March 2026: backported Homa to Red Hat Enterprise Linux versions
-  8 and 9.5, using the branches `rhel8` and `rhel9.5`. Future changes made to
-  the `main` branch are likely to be reflected in these branches also.
-- January 2026: introduced new 'homa_qdisc' queuing discpline to improve
-  performance when TCP and Homa run simultaneously. Results on c6620 CloudLab
-  cluster (100 Gbps network):
-  - Without homa_qdisc, if Homa and TCP run together, Homa performance
-    suffers (4x increase for P99 for short messages) but TCP performance
-    improves.
-  - Homa_qdisc improves performance for both Homa and TCP, whether
-    running stand-alone or together.
-  - homa_qdisc improves Homa's performance when running with TCP to almost
-    what is is when running without TCP.
-  - TCP performance improves when running together with Homa, with or
-    without homa_qdisc.
-- November 2025: upgraded to Linux 6.17.8.
-- October 2025: added the HOMAIOCINFO ioctl for retrieving status
-  information about a Homa socket. See man/homa.7 for details.
-- May 2025: `homa_api.c` has been removed, so the functions `homa_abort`,
-  `homa_reply`, `homa_replyv`, `homa_send`, and `homa_sendv` no longer
-  exist.
-- May 2025: added support for network namespaces.
-- May 2025: reworked support for peers to cap peer memory usage.
-- April 2025: upgraded to Linux 6.13.9.
-- April 2025: major refactoring of grant management (more efficient,
-  remove complexity that was causing an unending stream of bugs).
-- March 2025: added memory cap on memory for outgoing messages: send
-  requests can block if memory limit is reached.
-- March 2025: implemented private RPCs, resulting in API changes.
-  HOMA_RECVMSG_REQUEST and HOMA_RECVMSG_RESPONSE flags no longer exist and
-  struct homa_sendmsg_args now has a flags field with one defined
-  flag: HOMA_SENDMSG_PRIVATE.
-- February 2025: by default, incoming requests for a socket are rejected
-  unless the socket has been bound. setsockopt can be used with
-  SO_HOMA_SERVER to enable or disable incoming requests for any socket.
-- October 2024: the process of upstreaming Homa into the Linux kernel has
-  begun. The reviewing process is likely to result in API changes.
-  Upstreaming will occur in stages, so the first version to appear in Linux
-  will not be either functionally complete or performant. The sources in
-  this repository contain '#ifndef __STRIP__' directives, which
-  separate functionality being upstreamed from functionality that is not
-  currently upstreamed (some things, such as development aids,
-  may never be upstreamed).
-- October 2024: Homa now has an official IANA IP protocol number (146).
-- August 2024: upgraded to Linux 6.10.6.
-- July 2024: introduced "TCP hijacking", where Homa packets are sent as
-  legitimate TCP segments (using TCP as the IP protocol) and then reclaimed
-  from TCP on the destination. This allows Homa to make better use of
-  TSO and RSS.
-- June 2024: refactored sk_buff management to use frags; improves
-  efficiency significantly.
-- April 2024: replaced `master` branch with `main`
-- July 2023: upgraded to Linux 6.1.38.
-- December 2022: Version 2.0. This includes a new mechanism for managing
-  buffer space for incoming messages, which improves throughput by
-  50-100% in many situations. In addition, Homa now uses the sendmsg
-  and recvmsg system calls, rather than ioctls, for sending and receiving
-  messages. The API for receiving messages is incompatible with 1.01.
-- November 2022: implemented software GSO for Homa.
-- September 2022: added support for IPv6, as well as completion cookies.
-  This required small but incompatible changes to the API.
-  Many thanks to Dan Manjarres for contributing these
-  improvements.
-- September 2022: Homa now works on Linux 5.18 as well as 5.17.7
-- June 2022: upgraded to Linux 5.17.7.
-- November 2021: changed semantics to at-most-once (servers can no
-  longer see multiple instances of the same RPC).
-- August 2021: added new versions of the Homa system calls that
-  support iovecs; in addition, incoming messages can be read
-  incrementally across several homa_recv calls.
-- November 2020: upgraded to Linux 5.4.3.
-- June 2020: implemented busy-waiting during homa_recv: shaves 2
-  microseconds off latency.
-- June 2020: several fixes to prevent RPCs from getting "stuck",
-  where they never make progress.
-- May 2020: got priorities working correctly using the DSCP field
-  of IP headers.
-- December 2019: first versions of cperf ("cluster performance")
-  benchmark.
-- December 2019 - June 2020: many improvements to the GRO mechanism,
-  including better hashing and batching across RPCs; improves both
-  throughput and latency.
-- Fall 2019: many improvements to pacer, spread over a couple of months.
-- November 6, 2019: reworked locking to use RPC-level locks instead of
-  socket locks for most things (significantly reduces socket lock.
-  contention). Many more refinements to this in subsequent commits.
-- September 25, 2019: reworked timeout mechanism to eliminate over-hasty
-  timeouts. Also, limit the rate at which RESENDs will be sent to an
-  overloaded machine.
-- August 1, 2019: GSO and GRO are now working.
-- March 13, 2019: added support for shutdown kernel call, plus poll, select,
-  and epoll. Homa now connects will all of the essential Linux plumbing.
-- March 11, 2019: extended homa_recv API with new arguments: flags, id.
-- February 16, 2019: added manual entries in the subdirectory "man".
-- February 14, 2019: output queue throttling now seems to work (i.e., senders
-  implement SRPT properly).
-- November 6, 2019: timers and packet retransmission now work.
+| program | language | protocols | SMT keys |
+|---|---|---|---|
+| `unloaded/simple_server`, `simple_client` | C | smt, homa, tcp, tcp_ktls | the built-in key only, no handshake |
+| `unloaded-golang/simple_server`, `simple_client` | Go | smt, homa, tcp, tcp_ktls (with `GODEBUG=asyncpreemptoff=1`: a kTLS fault in Linux 6.17 breaks the connection when a signal interrupts a blocked send) | the built-in key, or `--handshake` with optional `--mtls` |
+| `unloaded-rust/simple_server`, `simple_client` | Rust | smt, homa, tcp, tcp_ktls | the built-in key, or `--handshake` with optional `--mtls` |
+| `handshake-c/smt_handshake` | C | smt | a handshake with an optional client certificate, then one echo |
+| `loaded/loaded_server`, `loaded_client` | C | smt, homa, tcp, tcp_ktls | the built-in key |
+
+- The three `unloaded` versions take the same options and print the same
+  RESULT JSON. The CONFIG block of the Go and Rust versions also gives the
+  kind of keys.
+- They send one RPC at a time. `-l` gives the size of the messages, or
+  `request,response`. `-n` gives the number of round trips. `-c` checks
+  every echoed byte.
+- Without `--handshake`, the programs give an SMT socket the built-in key
+  (`SMT_DEBUG_FIXED_KEY`), and a kTLS socket fixed test keys. Both are TLS
+  1.2 and AES-GCM-128. `SMT_TLS=13` and `SMT_KEY_BITS=256` in the
+  environment change them.
+- The built-in key needs `net.homa.debug_only_smt_fixed_key=1` on each
+  host, or the SMT programs stop with an error.
+- The programs pin themselves to core 1. With `HOMA_ECHO_PIN_CORE_DISABLE=1`
+  they stay where `taskset` puts them. A client and a server on one host
+  need this, because on one core the busy-polling client competes with the
+  server.
+- `--handshake` (Go and Rust, `--proto smt`): the keys come from a TLS 1.3
+  handshake over Homa to port 4433 of the server, as in `handshake-c`. The
+  records are TLS 1.3, with AES-GCM-128. With `--mtls` the client presents
+  `client.pem`, and the server requires a client certificate. All handshake
+  servers and clients here interoperate.
+
+## Build switches
+
+| switch | default | what it does | measured effect (duck, 100 Gb/s) |
+|---|---|---|---|
+| `CONFIG_SMT_TX_PIPELINE` | on | sends each record when it is sealed, not after the copy of the whole message | 64 KB, one RPC: RTT −21 % |
+| `CONFIG_SMT_RX_ALIGN` | on | lays out received ciphertext so that AES-GCM steps from packet to packet on 16-byte boundaries | RX AES-GCM cycles −20–25 %. Throughput +0–3 % |
+| `ENABLE_TIME_TRACE=0` | on | leaves out the timetrace records of Homa (about 380 ns for each RPC) | 1 KB: +2–10 % |
+| `CONFIG_SMT_RX_ZC` | off | decrypts records of 4 KB or more directly into the buffers of the user | none: the pinning of pages costs as much as the copy |
+| `CONFIG_SMT_NO_SEG_HDR` | off | leaves out the 4-byte `homa_seg_hdr` of each segment in a record, which changes the wire format | none |
+| `CONFIG_SMT_NO_REPLAY_GUARD` | off | measurement only: no replay guard | none |
+| `CONFIG_SMT_NOCRYPTO` | off | tests only: frames the records but does not encrypt them | |
+
+The Makefile turns on the first three with `SMT_FEATURES`.
+`make SMT_FEATURES=` builds without them.
+`make SMT_CFLAGS=-DCONFIG_SMT_RX_ZC` adds a switch.
+`make debug` adds the log messages of SMT.
+
+## Evaluation
+
+The tests ran on Linux 6.17.8, on two KVM guests (virtio) and on two hosts
+that are connected back to back. Each host has a Xeon Silver 4314 (16 cores)
+and a 100 Gb/s BlueField-3 NIC. Each echo below checks every byte.
+
+| test | where | result |
+|---|---|---|
+| echo of 23 sizes from 1 B to 1 MB around segment, record and trailer boundaries, `max_gso_size` 10000 and 65000: TLS 1.2 and 1.3 × AES-GCM-128 and -256, plain Homa, the built-in key with TLS 1.2 and 1.3 | two hosts | 0 failures |
+| the same with 1 % of Homa packets dropped at each receiver | two hosts | 0 failures |
+| the same with `smt_record_segs` 0, 1 and 3 at `max_gso_size` 10000, 16000 and 65000: TLS 1.2 and 1.3, `CONFIG_SMT_NOCRYPTO`, 1 % of packets dropped. `smt_record_segs` 0 and 3 in the builds without `CONFIG_SMT_TX_PIPELINE` or `CONFIG_SMT_RX_ALIGN`, and with `CONFIG_SMT_NO_SEG_HDR` or `CONFIG_SMT_RX_ZC` | two hosts | 53 sweeps, 0 failures, no kernel messages |
+| the same over loopback, `max_gso_size` 1000, 10000 and 65000 | one host, one guest | 0 failures |
+| `unloaded` in C, Go and Rust, every server and client pair: Homa, SMT with the fixed keys (TLS 1.2 / AES-GCM-128 and TLS 1.3 / AES-GCM-256), TCP, kTLS. 64 B, 1 MB, 3000 B requests with 100000 B responses, and the reverse | two hosts | 180 / 180. Each client that SIGINT stops prints its result |
+| handshake servers and clients (`handshake-c`, `--handshake` in Go and Rust), every pair, without and with mutual TLS. Then clients without a certificate against servers that require one | two hosts | 17 / 17 pairs pass. The servers refuse the 6 clients without a certificate |
+| 300 clients in a row, one socket each, fixed and setsockopt keys | two hosts, loopback | 0 failures |
+| loaded echo, 10 min each of 64 B × 200, 1 KB × 150, 8 KB × 100 and 64 KB × 50 RPCs in flight on one module load | two hosts | no RPC errors, no kernel warnings, no replay drops |
+| loaded echo over loopback, 2 min each of 64 B, 1500 B and 64 KB × 64 RPCs | one host | no RPC errors, no retransmissions. p99 78–82 µs (64 KB: 366 µs) |
+| `rmmod` after the tests | all | no SMT objects left |
+| unit tests (`test/smt`): the setsockopt checks, replacing, deleting and reclaiming keys, the built-in key, record framing and layout, several records in one packet, nonces, the replay window | build host | 29 / 29, no leaks |
+| keys: replace both or one, delete, reclaim after `smt_key_idle_secs`, refuse a peer without keys. 2000 peers on one socket, deleted or reclaimed. `handshake-c` with its bye | two guests | 0 failures, no kernel warnings |
+| keys from a handshake or the built-in key only. `unloaded` in C, Go and Rust, every pair. Protocols: Homa with the built-in key allowed, SMT with the built-in key (TLS 1.2 / AES-GCM-128, TLS 1.3 / AES-GCM-256), TCP, kTLS. Every handshake pair. The setsockopt rules (`keyrules.py` in SMT-NG_benchs). Idle reclaim with the built-in key | two hosts | 180 / 180 echoes, 17 / 17 handshake pairs, 16 / 16 rules. Without `debug_only_smt_fixed_key=1` the programs stop with EPERM. No kernel warnings |
+| builds: default, `SMT_FEATURES=`, `CONFIG_SMT_NOCRYPTO`, `CONFIG_SMT_RX_ZC` with `CONFIG_SMT_NO_SEG_HDR` and `CONFIG_SMT_NO_REPLAY_GUARD`, `NO_CONFIG_SMT=1` | guest | no compiler warnings. The echo tests pass |
+
+The plots below come from two hosts at 100 Gb/s. kTLS and SMT both use
+software AES-GCM-128 and TLS 1.2 records. Our mlx5 flex-parser patch steers
+the RX of SMT (and of Homa) to four queues, as RSS does for TCP. The layout
+is that of Figures 6 and 7 of the paper.
+
+One RPC at a time, mean RTT:
+
+![RTT of one RPC at a time](smt-apps/figures/smt-unloaded.png)
+
+Throughput with 50 to 200 RPCs in flight:
+
+![Throughput under load](smt-apps/figures/smt-loaded.png)
+
+One host over loopback: 1500 B echo, one RPC at a time. The server and the
+client run on cores of their own. The plot gives the median RTT of 3 × 100000
+calls (3 × 1000 gives the same). Encryption adds 2.39 µs (TLS 1.2) and 2.55 µs (TLS 1.3) to the RTT
+of Homa with SMT. It adds 4.02 µs and 5.20 µs to the RTT of TCP with kTLS.
+
+![RTT over loopback](smt-apps/figures/smt-loopback.png)
+
+### Record layout
+
+A record fills whole segments, with at most 16 KB of data (11 segments at
+MTU 1500). A GSO packet carries as many whole records as fit. The table
+gives the throughput at `max_gso_size` 65000, relative to one record in
+each GSO packet (smt-ng-split 92c3f11d). 12 threads, 10 s cells, means of
+3 rounds (round-to-round spread at most 5.0 %).
+
+| layout | 8 KB × 1 / 50 / 150 RPCs | 64 KB × 1 / 50 / 150 | 256 KB × 1 / 50 / 150 |
+|---|---|---|---|
+| several records in each GSO packet (this version) | 1.01 / 1.01 / 1.02 | 1.00 / 1.00 / 0.99 | 1.01 / 1.15 / 1.14 |
+| one record in each segment (`smt_record_segs` 1) | 0.89 / 0.69 / 0.53 | 0.60 / 0.47 / 0.51 | 0.42 / 1.10 / 1.09 |
+| plain Homa, for comparison | 1.19 / 1.14 / 1.05 | 1.26 / 1.02 / 1.13 | 1.48 / 1.11 / 1.13 |
+
+- At 256 KB under load, SMT is level with plain Homa. The size of the GSO
+  packets limits it there, not the encryption.
+- One record in each segment costs one AES-GCM operation for each packet
+  and 29 bytes of each segment (TLS 1.2).
+
+## What SMT changes in Homa's files
+
+| file | change |
+|---|---|
+| `homa_sock.c`, `homa_sock.h` | the SMT state of each socket, set up and released with the socket |
+| `homa_rpc.c`, `homa_rpc.h` | each RPC finds the keys of its peer and holds them until it is reaped. A single-packet request goes to the user only when its whole record is there |
+| `homa_outgoing.c` | lays out and seals messages as records, whole records in each packet |
+| `homa_incoming.c` | queues packets by record, and decrypts each record on its way to the user (`homa_copy_to_user`) |
+| `homa_offload.c` | GRO bypass for single-packet SMT messages |
+| `homa_qdisc.c`, `homa_impl.h` | deferred packets take their offset from `homa_skb_info`, because the linear part of an SMT packet ends before `homa_seg_hdr` |
+| `homa_plumbing.c` | the `SOL_TLS` setsockopt, the sysctls `smt_sw_pool_init`, `smt_key_idle_secs`, `debug_only_smt_fixed_key` and `smt_record_segs`, load and unload. No TCP hijacking |
+| `homa_timer.c` | deletes the keys that no RPC used for `smt_key_idle_secs`, about once a second |
+| `homa_metrics.c`, `homa_metrics.h` | `smt_replay_drops`, `smt_replay_too_old` |
+| `timetrace.h` | `ENABLE_TIME_TRACE` can come from the build |
+
+## Design
+
+[smt-design.md](smt-design.md) describes the key interface (SMT APIs), the wire format and the security design.

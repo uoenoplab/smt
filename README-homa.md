@@ -1,0 +1,199 @@
+This repo contains an implementation of the Homa transport protocol as a Linux kernel module.
+
+- For more information on Homa in general, see the [Homa
+  Wiki](https://homa-transport.atlassian.net/wiki/spaces/HOMA).
+
+- More information about this implementation and its performance are available in
+  the paper [A Linux Kernel Implementation of the Homa Transport
+  Protocol](https://www.usenix.org/system/files/atc21-ousterhout.pdf),
+  which appeared in the USENIX Annual Technical Conference in July, 2021.
+
+- A synopsis of the protocol implemented by this module is available in
+  [protocol.md](https://github.com/PlatformLab/HomaModule/blob/main/protocol.md).
+
+- As of August 2020, Homa has complete functionality for running real applications,
+  and its tail latency is more than 10x better than TCP for all workloads I have
+  measured (Homa's 99-th percentile latency is usually better than TCP's mean
+  latency). Here is a list of the most significant functionality that is still
+  missing:
+  - The incast optimization from Section 3.6 of the SIGCOMM paper has not
+    been implemented yet. If you would like to test Homa under large incasts,
+    let me know and I will implement this feature.
+
+- Please contact me if you have any problems using this repo; I'm happy to
+  provide advice and support.
+
+- The head is known to work under Linux 6.17.8; this is where current
+  development occurs. In addition, the head has recently been updated to
+  compile under Linux 7.0.14 (these changes are not actively supported, so
+  they may bit-rot over time; please submit fixes if that happens).
+  The branches `rhel8` and `rhel9.5` are known to
+  run on the corresdponding versions of Red Hat Enterprise Linux and are
+  relatively up to date. They are "officially supported" in that I plan to
+  backport changes from the main branch to them.
+
+- Other versions of Linux have not been tested and may require code changes
+  (typically this is easy to do). If you get Homa working on some other
+  version, please submit a pull request with the required code changes (I'll
+  try to include them, like the 7.0.14 changes, if that can be done in a
+  reasonably clean way).
+
+- In the past, Homa has run under several earlier versions of Linux. There is
+  a separate branch for each of these older versions, with names such as
+  linux_4.15.18. Older branches are generally out of date feature-wise:
+  recent commits have not been backported to them.
+
+- To build and install Homa, see instructions in `INSTALL.md`.
+
+- A collection of man pages is available in the "man" subdirectory. The API for
+  Homa is different from TCP sockets.
+
+- Related work that you may find useful:
+  - [Preliminary support for using Homa with gRPC](https://github.com/PlatformLab/grpc_homa)
+  - [A Go client that works with this module](https://github.com/dpeckett/go-homa)
+
+- NIC support: Homa is known to work with the following NICs:
+  - Mellanox ConnectX-4, ConnectX-5, and ConnectX-6
+  - Intel E810 series (ice)
+  Please let me know if you find other NICs that work (or don't work).
+
+- The subdirectory "test" contains unit tests, which you can run by typing
+  "make" in that subdirectory.
+
+- The subdirectory "util" contains an assortment of utility programs that
+  you may find useful in exercising and benchmarking Homa. Compile them by typing
+  `make` in that subdirectory. Here are some examples of benchmarks you might
+  find useful:
+  - The `cp_node` program can be run stand-alone on clients and servers to run
+    simple benchmarks. For a simple latency test, run `cp_node server` on node1 of
+    the cluster, then run `cp_node client` on node 0. The client will send
+    continuous back-to-back short requests to the server and output timing
+    information. Or, run `cp_node client --workload 500000` on the client:
+    this will send continuous 500 KB messages for a simple througput test.
+    Type `cp_node --help` to learn about other ways you can use this program.
+  - The `cp_bench` script uses `cp_node` to run any of a variety of
+    benchmarks; it was used to generate the data for Figures 3 and 4 in
+    the Homa ATC paper. Here is an example command:
+    ```
+    cp_bench -n 10 -w w4 -b 20 -B homa_vs_tcp
+    ```
+    The `-B` option selects one of several benchmarks; `homa_vs_tcp`
+    will run both Homa and TCP on the same workload and generate graphs
+    comparing them.
+    When invoked on node0, this will run the W4 workload
+    from the ATC paper,
+    running on 10 nodes and generating 20 Gbps of offered load (80%
+    network load on a 25 Gbps network). Type `cp_bench --help` for
+    information on all available options.
+
+ - Some additional tools you might find useful:
+   - Homa collects various metrics about its behavior, such as the size
+     distribution of incoming messages. You can access these through the
+     file `/proc/net/homa_metrics`. The script `util/metrics.py` will
+     collect metrics and print out all the numbers that have changed
+     since its last run.
+   - Homa exports a collection of configuration parameters through the
+     sysctl mechanism. For details, see the man page `homa.7`.
+
+## Significant changes
+- September 2026: Protocol change in granting mechanism. Messages that
+  require grants are now completely scheduled (no initial unscheduled
+  packets are sent). A new packet type, START_MSG, has been introduced
+  for these messages to announce themselves to the recipient.
+- March 2026: backported Homa to Red Hat Enterprise Linux versions
+  8 and 9.5, using the branches `rhel8` and `rhel9.5`. Future changes made to
+  the `main` branch are likely to be reflected in these branches also.
+- January 2026: introduced new 'homa_qdisc' queuing discpline to improve
+  performance when TCP and Homa run simultaneously. Results on c6620 CloudLab
+  cluster (100 Gbps network):
+  - Without homa_qdisc, if Homa and TCP run together, Homa performance
+    suffers (4x increase for P99 for short messages) but TCP performance
+    improves.
+  - Homa_qdisc improves performance for both Homa and TCP, whether
+    running stand-alone or together.
+  - homa_qdisc improves Homa's performance when running with TCP to almost
+    what is is when running without TCP.
+  - TCP performance improves when running together with Homa, with or
+    without homa_qdisc.
+- November 2025: upgraded to Linux 6.17.8.
+- October 2025: added the HOMAIOCINFO ioctl for retrieving status
+  information about a Homa socket. See man/homa.7 for details.
+- May 2025: `homa_api.c` has been removed, so the functions `homa_abort`,
+  `homa_reply`, `homa_replyv`, `homa_send`, and `homa_sendv` no longer
+  exist.
+- May 2025: added support for network namespaces.
+- May 2025: reworked support for peers to cap peer memory usage.
+- April 2025: upgraded to Linux 6.13.9.
+- April 2025: major refactoring of grant management (more efficient,
+  remove complexity that was causing an unending stream of bugs).
+- March 2025: added memory cap on memory for outgoing messages: send
+  requests can block if memory limit is reached.
+- March 2025: implemented private RPCs, resulting in API changes.
+  HOMA_RECVMSG_REQUEST and HOMA_RECVMSG_RESPONSE flags no longer exist and
+  struct homa_sendmsg_args now has a flags field with one defined
+  flag: HOMA_SENDMSG_PRIVATE.
+- February 2025: by default, incoming requests for a socket are rejected
+  unless the socket has been bound. setsockopt can be used with
+  SO_HOMA_SERVER to enable or disable incoming requests for any socket.
+- October 2024: the process of upstreaming Homa into the Linux kernel has
+  begun. The reviewing process is likely to result in API changes.
+  Upstreaming will occur in stages, so the first version to appear in Linux
+  will not be either functionally complete or performant. The sources in
+  this repository contain '#ifndef __STRIP__' directives, which
+  separate functionality being upstreamed from functionality that is not
+  currently upstreamed (some things, such as development aids,
+  may never be upstreamed).
+- October 2024: Homa now has an official IANA IP protocol number (146).
+- August 2024: upgraded to Linux 6.10.6.
+- July 2024: introduced "TCP hijacking", where Homa packets are sent as
+  legitimate TCP segments (using TCP as the IP protocol) and then reclaimed
+  from TCP on the destination. This allows Homa to make better use of
+  TSO and RSS.
+- June 2024: refactored sk_buff management to use frags; improves
+  efficiency significantly.
+- April 2024: replaced `master` branch with `main`
+- July 2023: upgraded to Linux 6.1.38.
+- December 2022: Version 2.0. This includes a new mechanism for managing
+  buffer space for incoming messages, which improves throughput by
+  50-100% in many situations. In addition, Homa now uses the sendmsg
+  and recvmsg system calls, rather than ioctls, for sending and receiving
+  messages. The API for receiving messages is incompatible with 1.01.
+- November 2022: implemented software GSO for Homa.
+- September 2022: added support for IPv6, as well as completion cookies.
+  This required small but incompatible changes to the API.
+  Many thanks to Dan Manjarres for contributing these
+  improvements.
+- September 2022: Homa now works on Linux 5.18 as well as 5.17.7
+- June 2022: upgraded to Linux 5.17.7.
+- November 2021: changed semantics to at-most-once (servers can no
+  longer see multiple instances of the same RPC).
+- August 2021: added new versions of the Homa system calls that
+  support iovecs; in addition, incoming messages can be read
+  incrementally across several homa_recv calls.
+- November 2020: upgraded to Linux 5.4.3.
+- June 2020: implemented busy-waiting during homa_recv: shaves 2
+  microseconds off latency.
+- June 2020: several fixes to prevent RPCs from getting "stuck",
+  where they never make progress.
+- May 2020: got priorities working correctly using the DSCP field
+  of IP headers.
+- December 2019: first versions of cperf ("cluster performance")
+  benchmark.
+- December 2019 - June 2020: many improvements to the GRO mechanism,
+  including better hashing and batching across RPCs; improves both
+  throughput and latency.
+- Fall 2019: many improvements to pacer, spread over a couple of months.
+- November 6, 2019: reworked locking to use RPC-level locks instead of
+  socket locks for most things (significantly reduces socket lock.
+  contention). Many more refinements to this in subsequent commits.
+- September 25, 2019: reworked timeout mechanism to eliminate over-hasty
+  timeouts. Also, limit the rate at which RESENDs will be sent to an
+  overloaded machine.
+- August 1, 2019: GSO and GRO are now working.
+- March 13, 2019: added support for shutdown kernel call, plus poll, select,
+  and epoll. Homa now connects will all of the essential Linux plumbing.
+- March 11, 2019: extended homa_recv API with new arguments: flags, id.
+- February 16, 2019: added manual entries in the subdirectory "man".
+- February 14, 2019: output queue throttling now seems to work (i.e., senders
+  implement SRPT properly).
+- November 6, 2019: timers and packet retransmission now work.

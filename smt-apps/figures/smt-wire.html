@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SMT on the Wire</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one 1200×740 stage that builds up step by step (sender rows on top,
+   the wire, the receiver at the bottom), controls above, live values below. */
+:root {
+  --bg: #eef0f6; --panel: #ffffff; --ink: #121827; --muted: #5a6378; --line: #d3d8e4;
+  --accent: #3f4cf2; --glow: rgba(63, 76, 242, .28);
+  --k-data: #2bb08b; --k-seg: #3a86f7; --k-tls: #f0a330; --k-ct: #6a48ee; --k-tag: #ff6a48;
+  --k-homa: #e6c35c; --k-ip: #8c95ab; --k-ctl: #b5bccb; --ok: #18a866; --bad: #e5484d;
+  --on-k: #10131c; --on-ct: #ffffff;
+  --f-disp: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0a0e19; --panel: #111727; --ink: #e6e9f2; --muted: #8e98ae; --line: #252f48;
+  --accent: #7c86ff; --glow: rgba(124, 134, 255, .35);
+  --k-data: #33c79c; --k-seg: #4d95ff; --k-tls: #f5b04a; --k-ct: #7c5cff; --k-tag: #ff7a5a;
+  --k-homa: #e9c86a; --k-ip: #75809a; --k-ctl: #4a5470; --ok: #2fcf83; --bad: #ff5c62;
+  --on-k: #0b0f1a; --on-ct: #ffffff; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0a0e19; --panel: #111727; --ink: #e6e9f2; --muted: #8e98ae; --line: #252f48;
+  --accent: #7c86ff; --glow: rgba(124, 134, 255, .35);
+  --k-data: #33c79c; --k-seg: #4d95ff; --k-tls: #f5b04a; --k-ct: #7c5cff; --k-tag: #ff7a5a;
+  --k-homa: #e9c86a; --k-ip: #75809a; --k-ctl: #4a5470; --ok: #2fcf83; --bad: #ff5c62;
+  --on-k: #0b0f1a; --on-ct: #ffffff; color-scheme: dark }
+
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); }
+.page { max-width: 1240px; margin: 0 auto; padding-block: 20px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 14px; }
+header h1 { font-family: var(--f-disp); font-weight: 700; font-size: clamp(26px, 4vw, 40px); margin: 0; letter-spacing: .01em; text-wrap: balance; }
+header p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; line-height: 1.45; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+.btns { display: flex; gap: 6px; }
+button, .seg-ctl label { font: 500 13px/1 var(--f-body); color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:focus-visible, .seg-ctl input:focus-visible + label, .check input:focus-visible, #rpc:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); min-width: 86px; }
+.dots { display: flex; gap: 4px; flex-wrap: wrap; }
+.dots button { padding: 6px 9px; font: 600 12px/1 var(--f-mono); color: var(--muted); }
+.dots button[aria-current="step"] { color: #fff; background: var(--accent); border-color: var(--accent); }
+.dots button.done { color: var(--accent); }
+.seg-ctl { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg-ctl input { position: absolute; opacity: 0; pointer-events: none; }
+.seg-ctl label { border: 0; border-radius: 0; padding: 8px 10px; }
+.seg-ctl input:checked + label { background: var(--accent); color: #fff; }
+.field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+#rpc { font: 13px var(--f-mono); width: 13ch; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+.check { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+
+.caption { display: grid; gap: 4px; min-height: 108px; align-content: start; }
+.caption .n { font: 600 12px var(--f-mono); color: var(--accent); letter-spacing: .08em; text-transform: uppercase; }
+.caption h2 { margin: 0; font: 700 22px/1.2 var(--f-disp); text-wrap: balance; }
+.caption p { margin: 0; color: var(--muted); max-width: 95ch; line-height: 1.45; }
+
+.wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.sizer { position: relative; }
+.stage { position: absolute; left: 0; top: 0; width: 1200px; height: 740px; transform-origin: 0 0; overflow: hidden;
+  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 24px 24px; }
+
+.zone { position: absolute; left: 14px; font: 600 11px var(--f-mono); letter-spacing: .14em; color: var(--muted); text-transform: uppercase; writing-mode: vertical-rl; transform: rotate(180deg); }
+.rowlbl { position: absolute; font: 600 12px var(--f-mono); color: var(--muted); transition: opacity .6s; }
+
+.el { position: absolute; left: 0; top: 0; box-sizing: border-box; border-radius: 4px; display: flex; flex-direction: column;
+  justify-content: center; align-items: center; text-align: center; overflow: hidden; white-space: nowrap;
+  color: var(--on-k); border: 1px solid rgba(0,0,0,.18);
+  transition: transform .8s cubic-bezier(.2,.8,.2,1), width .8s cubic-bezier(.2,.8,.2,1), height .8s, opacity .6s, background-color .6s, box-shadow .4s, filter .4s; }
+.el .lb { font: 600 11px/1.2 var(--f-body); }
+.el .hx { font: 11px/1.25 var(--f-mono); opacity: .92; }
+.k-data { background: var(--k-data); } .k-seg { background: var(--k-seg); } .k-tls { background: var(--k-tls); }
+.k-ct { background: var(--k-ct); color: var(--on-ct); } .k-tag { background: var(--k-tag); } .k-homa { background: var(--k-homa); }
+.k-ip { background: var(--k-ip); color: #fff; } .k-ctl { background: var(--k-ctl); color: var(--ink); }
+.k-ghost { background: transparent; border: 1px dashed var(--muted); color: var(--muted); }
+.k-ct::after { content: ""; position: absolute; inset: 0; opacity: .22; pointer-events: none;
+  background: repeating-linear-gradient(115deg, transparent 0 6px, rgba(255,255,255,.35) 6px 7px); animation: drift 2.4s linear infinite; }
+@keyframes drift { to { background-position: 46px 0; } }
+.badge { position: absolute; left: 0; top: 0; font: 600 11px var(--f-mono); color: var(--muted); white-space: nowrap; transition: transform .8s cubic-bezier(.2,.8,.2,1), opacity .6s; }
+.bit { position: absolute; left: 0; top: 0; width: 14px; height: 22px; border-radius: 3px; font: 600 11px/22px var(--f-mono); text-align: center;
+  background: var(--line); color: var(--muted); transition: transform .7s cubic-bezier(.2,.8,.2,1), opacity .5s, background-color .5s, color .5s; }
+.bit.id { background: var(--k-seg); color: #fff; } .bit.rsp { background: var(--k-tls); color: var(--on-k); } .bit.ix { background: var(--k-data); color: var(--on-k); }
+.bit.one { box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); }
+.byte { position: absolute; left: 0; top: 0; width: 40px; height: 30px; border-radius: 4px; font: 600 12px/30px var(--f-mono); text-align: center;
+  transition: transform .7s cubic-bezier(.2,.8,.2,1), opacity .5s, background-color .5s; color: var(--on-k); }
+.glow { box-shadow: 0 0 0 2px var(--accent), 0 0 18px 4px var(--glow); }
+.okglow { box-shadow: 0 0 0 2px var(--ok), 0 0 22px 6px color-mix(in srgb, var(--ok) 45%, transparent); }
+.badglow { box-shadow: 0 0 0 2px var(--bad), 0 0 22px 6px color-mix(in srgb, var(--bad) 45%, transparent); }
+.hit { animation: hit .5s; } @keyframes hit { 0%,100% { filter: none } 30% { filter: brightness(2.2) } }
+.shake { animation: shake .45s; } @keyframes shake { 25% { translate: -5px 0 } 75% { translate: 5px 0 } }
+.tampered { outline: 3px solid var(--bad); outline-offset: -3px; }
+.wire { position: absolute; left: 40px; width: 1120px; height: 4px; top: 560px; border-radius: 2px; transition: opacity .6s;
+  background: repeating-linear-gradient(90deg, var(--accent) 0 18px, transparent 18px 30px); background-size: 30px 4px; animation: flow 1s linear infinite; opacity: .55; }
+@keyframes flow { to { background-position: 30px 0; } }
+.sweep { position: absolute; top: 0; left: 0; width: 70px; height: 70px; pointer-events: none; opacity: 0; border-radius: 6px;
+  background: linear-gradient(90deg, transparent, var(--glow), rgba(255,255,255,.65), var(--glow), transparent); transition: transform 1.4s linear, opacity .3s; }
+.verdict { position: absolute; left: 0; top: 0; font: 700 15px var(--f-disp); padding: 6px 12px; border-radius: 999px; color: #fff; transition: transform .6s, opacity .5s; }
+.formula { position: absolute; left: 0; top: 0; font: 13px var(--f-mono); color: var(--ink); white-space: nowrap; transition: opacity .5s, transform .7s; }
+.formula b { font-weight: 600; }
+.formula .c-id { color: var(--k-seg); } .formula .c-r { color: var(--k-tls); } .formula .c-ix { color: var(--k-data); }
+
+.values { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px 22px; }
+.values div { min-width: 0; }
+.values dt { font: 600 11px var(--f-mono); color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+.values dd { margin: 2px 0 0; font: 12.5px/1.45 var(--f-mono); overflow-wrap: anywhere; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+.note { font-size: 12.5px; color: var(--muted); max-width: 95ch; line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) { .el, .bit, .byte, .badge, .sweep, .formula, .verdict { transition: none !important; } .k-ct::after, .wire { animation: none; } }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <header>
+    <h1>SMT on the Wire</h1>
+    <p>How SMT turns one Homa message into authenticated TLS records and packets, and back. The bytes are real: your browser runs AES-GCM with the fixed test key of <code>unloaded/</code>.</p>
+  </header>
+
+  <div class="bar" role="group" aria-label="Playback">
+    <div class="btns">
+      <button id="prev" aria-label="Previous step">◀</button>
+      <button id="play" class="primary">Pause</button>
+      <button id="next" aria-label="Next step">▶</button>
+    </div>
+    <div class="dots" id="dots" aria-label="Steps"></div>
+  </div>
+
+  <div class="bar" role="group" aria-label="Example">
+    <span class="seg-ctl" role="radiogroup" aria-label="TLS version">
+      <input type="radio" name="tls" id="tls12" value="12" checked><label for="tls12">TLS 1.2</label>
+      <input type="radio" name="tls" id="tls13" value="13"><label for="tls13">TLS 1.3</label>
+    </span>
+    <span class="seg-ctl" role="radiogroup" aria-label="Direction">
+      <input type="radio" name="dir" id="req" value="0" checked><label for="req">request</label>
+      <input type="radio" name="dir" id="rsp" value="1"><label for="rsp">response</label>
+    </span>
+    <span class="seg-ctl" role="radiogroup" aria-label="Record index">
+      <input type="radio" name="rec" id="rec0" value="0"><label for="rec0">record 0</label>
+      <input type="radio" name="rec" id="rec1" value="1" checked><label for="rec1">record 1</label>
+      <input type="radio" name="rec" id="rec2" value="2"><label for="rec2">record 2</label>
+    </span>
+    <label class="field" for="rpc">RPC id <input id="rpc" value="0x1f2a4c6e" spellcheck="false" inputmode="text"></label>
+    <label class="check" for="tamper"><input type="checkbox" id="tamper"> flip a byte on the wire</label>
+  </div>
+
+  <div class="caption" aria-live="polite">
+    <span class="n" id="capn"></span>
+    <h2 id="caph"></h2>
+    <p id="capp"></p>
+  </div>
+
+  <div class="wrap" id="wrap"><div class="sizer" id="sizer"><div class="stage" id="stage">
+    <div class="zone" style="top:30px;height:490px">sender · homa.ko</div>
+    <div class="zone" style="top:535px;height:60px">wire</div>
+    <div class="zone" style="top:612px;height:120px">receiver</div>
+    <div class="rowlbl" id="lbl-msg" style="left:44px;top:52px">sendmsg()</div>
+    <div class="rowlbl" id="lbl-rec" style="left:44px;top:112px">records</div>
+    <div class="rowlbl" id="lbl-zoom" style="left:44px;top:196px"></div>
+    <div class="rowlbl" id="lbl-seq" style="left:44px;top:340px"></div>
+    <div class="rowlbl" id="lbl-pkt" style="left:44px;top:190px"></div>
+    <div class="wire" id="wire"></div>
+  </div></div></div>
+
+  <div class="legend" aria-label="Colours">
+    <span><i style="background:var(--k-data)"></i>message bytes</span>
+    <span><i style="background:var(--k-seg)"></i>Homa segment header</span>
+    <span><i style="background:var(--k-tls)"></i>TLS header, nonce</span>
+    <span><i style="background:var(--k-ct)"></i>ciphertext</span>
+    <span><i style="background:var(--k-tag)"></i>AES-GCM tag</span>
+    <span><i style="background:var(--k-homa)"></i>Homa data header</span>
+    <span><i style="background:var(--k-ip)"></i>IP header</span>
+  </div>
+
+  <dl class="values" id="values"></dl>
+  <p class="note">Sizes are shrunk so that the bytes fit on the screen: here a segment holds 16 message bytes and a record 3 segments. In SMT a record holds up to <code>max_gso_data</code> bytes (at most 16 KB, 20 segments). The layout, the header sizes, the sequence number, the nonce and the AAD follow <code>smt_outgoing.c</code>, <code>smt_sw.c</code> and <code>smt_impl.h</code>.</p>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $ = (s) => document.querySelector(s);
+const stage = $("#stage"), wrap = $("#wrap"), sizer = $("#sizer");
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const SEG = 16, NSEG = 3, REC = SEG * NSEG, NREC = 3;
+const TEXT = ('POST /pay {"from":"acct-1021","to":"acct-7731","cents":25000,"memo":"October rent","ts":1793050320,"ref":"inv-88214"}' + " ".repeat(200)).slice(0, REC * NREC);
+const KEYS = { // the fixed test keys of smt_uapi.c: client then server
+  0: { key: "8dd230a77a05eb71159129bcbcf64230", iv: "87c635c81787de4a881dd2d5" },
+  1: { key: "6ccf62ff4be61485d8ba29fe2e847a7f", iv: "b9fa5583d58f8518ffa63e66" } };
+const STEPS = [
+  ["sendmsg() gives Homa a message", "The application sends one message on a Homa socket. SMT works under the socket API, so the application does not change."],
+  ["SMT cuts the message into records", "A record holds up to max_gso_data bytes of the message. One record is one GSO packet, so the receiver can authenticate each record alone."],
+  ["Each record becomes a TLS record", "Each segment keeps its 4-byte Homa segment header (the offset of its data in the message). A TLS header leads the record: 17 03 03 and the length. TLS 1.2 adds an 8-byte explicit nonce, TLS 1.3 a content-type byte at the end."],
+  ["The nonce comes from the RPC id and the record index", "seq = (RPC id >> 1) << 17 | response bit << 16 | record index. The nonce is salt ‖ (iv XOR seq). No counter is shared between RPCs, so the records of different RPCs need no order."],
+  ["AES-GCM seals the record", "The AAD is the TLS header (TLS 1.2: the sequence number first). The keystream encrypts the segments, and the 16-byte tag protects the header and the ciphertext."],
+  ["GSO cuts the record into packets", "Each packet repeats the Homa data header: pad and sequence hold the offset of the record, and the IP id counts the packets. Only the first packet carries the TLS header."],
+  ["The packets cross the wire", "Packets can arrive in any order. Control packets (GRANT, ACK and others) stay plain Homa: they carry no message data."],
+  ["The receiver authenticates and decrypts the whole record", "It places each packet by record offset and IP id, checks the tag, decrypts, drops the segment headers and gives the bytes to recvmsg(). If the tag does not match, the RPC fails with EBADMSG."],
+];
+const st = { step: 0, playing: !REDUCED, tls13: false, resp: 0, rec: 1, rpc: 0x1f2a4c6en, tamper: false, run: 0, c: null };
+
+/* ---------- bytes and crypto ---------- */
+const hex = (u, sep = " ") => Array.from(u, (b) => b.toString(16).padStart(2, "0")).join(sep);
+const fromHex = (h) => Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
+const be = (v, n) => { const u = new Uint8Array(n); let x = BigInt(v); for (let i = n - 1; i >= 0; i--) { u[i] = Number(x & 0xffn); x >>= 8n; } return u; };
+const cat = (...a) => { const u = new Uint8Array(a.reduce((s, x) => s + x.length, 0)); let o = 0; for (const x of a) { u.set(x, o); o += x.length; } return u; };
+const enc = new TextEncoder();
+const MASK48 = (1n << 48n) - 1n;
+
+async function compute() {
+  const r = st.rec, k = KEYS[st.resp], iv = fromHex(k.iv);
+  const seq = (((st.rpc & MASK48) >> 1n) << 17n) | (BigInt(st.resp) << 16n) | BigInt(r);
+  const implicit = st.tls13 ? iv.slice(4) : new Uint8Array(8);
+  const nonce = cat(iv.slice(0, 4), be(BigInt("0x" + hex(implicit, "")) ^ seq, 8));
+  const segs = [];
+  for (let s = 0; s < NSEG; s++) {
+    const off = r * REC + s * SEG;
+    segs.push({ off, hdr: be(off, 4), data: enc.encode(TEXT.slice(off, off + SEG)) });
+  }
+  let pt = cat(...segs.flatMap((g) => [g.hdr, g.data]));
+  if (st.tls13) pt = cat(pt, Uint8Array.of(0x17));
+  const wireLen = (st.tls13 ? 0 : 8) + pt.length + 16;
+  const tlsHdr = cat(Uint8Array.of(0x17, 3, 3), be(wireLen, 2));
+  const aad = st.tls13 ? tlsHdr : cat(be(seq, 8), Uint8Array.of(0x17, 3, 3), be(pt.length, 2));
+  let out, real = true;
+  try {
+    const key = await crypto.subtle.importKey("raw", fromHex(k.key), "AES-GCM", false, ["encrypt", "decrypt"]);
+    out = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 }, key, pt));
+    st.key = key;
+  } catch (e) { // no WebCrypto here: stand-in bytes, said so in the values
+    real = false; out = new Uint8Array(pt.length + 16); let x = Number(seq & 0xffffffffn) | 1;
+    for (let i = 0; i < out.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; out[i] = x & 0xff; }
+  }
+  const ct = out.slice(0, pt.length), tag = out.slice(pt.length);
+  return { seq, nonce, iv, implicit, salt: iv.slice(0, 4), segs, pt, ct, tag, tlsHdr, aad, wireLen, real,
+    nonceExplicit: be(seq, 8), keyHex: k.key };
+}
+async function verify(c) {
+  if (!c.real) return !st.tamper;
+  const ct = c.ct.slice(); if (st.tamper) ct[NSEG > 1 ? 20 + 4 + 3 : 7] ^= 0x20;
+  try { await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.nonce, additionalData: c.aad, tagLength: 128 }, st.key, cat(ct, c.tag)); return true; }
+  catch (e) { return false; }
+}
+
+/* ---------- the stage: elements placed by id ---------- */
+const els = new Map();
+function put(id, o) { // o: {x,y,w,h,cls,html,op,tag}
+  let e = els.get(id);
+  if (!e) { e = document.createElement("div"); e.dataset.id = id; stage.appendChild(e); els.set(id, e);
+    if (o.from) { place(e, { ...o, ...o.from }, true); void e.offsetWidth; } }
+  place(e, o, false); e.dataset.seen = st.run; return e;
+}
+function place(e, o, instant) {
+  if (instant) e.style.transition = "none";
+  e.className = o.cls;
+  if (o.html !== undefined && e.dataset.html !== o.html) { e.innerHTML = o.html; e.dataset.html = o.html; }
+  e.style.transform = `translate(${o.x}px, ${o.y}px)`;
+  if (o.w !== undefined) e.style.width = o.w + "px";
+  if (o.h !== undefined) e.style.height = o.h + "px";
+  e.style.opacity = o.op ?? 1;
+  e.style.zIndex = o.z ?? 1;
+  e.style.transitionDelay = REDUCED ? "0ms" : (o.dl || 0) + "ms";
+  if (instant) { void e.offsetWidth; e.style.transition = ""; }
+}
+function sweepOut() { for (const [id, e] of els) if (e.dataset.seen != st.run) { e.style.opacity = 0; e.dataset.dead = "1"; } }
+const box = (lb, hx) => `<span class="lb">${lb}</span>${hx !== undefined ? `<span class="hx">${hx}</span>` : ""}`;
+const asc = (u) => '"' + Array.from(u, (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : "·")).join("").replace(/&/g, "&amp;").replace(/</g, "&lt;") + '"';
+const short = (u, n = 6) => hex(u.slice(0, n)) + (u.length > n ? " …" : "");
+
+/* geometry of the record in its zoom row (y 175), and as packets: cut in place (y 175), at the receiver (y 650) */
+function zoomParts(c) {
+  const p = []; let x = 150; const y = 175, h = 58;
+  p.push({ id: "tlshdr", x, y, w: 112, h, kind: "k-tls", lb: "TLS header", hx: hex(c.tlsHdr, "") }); x += 112;
+  if (!st.tls13) { p.push({ id: "nonce", x, y, w: 128, h, kind: "k-tls", lb: "explicit nonce", hx: hex(c.nonceExplicit, "") }); x += 128; }
+  c.segs.forEach((g, s) => {
+    p.push({ id: "sh" + s, x, y, w: 74, h, kind: "k-seg", lb: "seg hdr", hx: hex(g.hdr, ""), seg: s, part: "h" }); x += 74;
+    p.push({ id: "sd" + s, x, y, w: 150, h, kind: "k-data", lb: "segment " + s, hx: asc(g.data), seg: s, part: "d" }); x += 150;
+  });
+  if (st.tls13) { p.push({ id: "type", x, y, w: 46, h, kind: "k-data", lb: "type", hx: "17" }); x += 46; }
+  p.push({ id: "tag", x, y, w: 124, h, kind: "k-ghost", lb: "tag", hx: "(after sealing)" });
+  return p;
+}
+function ctParts(c, p) { // the same parts, sealed
+  return p.map((q) => {
+    if (q.id.startsWith("sh") || q.id.startsWith("sd")) {
+      const s = q.seg, base = s * (SEG + 4), u = q.part === "h" ? c.ct.slice(base, base + 4) : c.ct.slice(base + 4, base + 4 + SEG);
+      return { ...q, kind: "k-ct", lb: q.part === "h" ? "seg hdr" : "ciphertext " + s, hx: q.part === "h" ? hex(u, "") : short(u) };
+    }
+    if (q.id === "type") return { ...q, kind: "k-ct", lb: "type", hx: hex(c.ct.slice(-1)) };
+    if (q.id === "tag") return { ...q, kind: "k-tag", lb: "tag", hx: short(c.tag) };
+    return q;
+  });
+}
+function packetPos(c, y, order) { // pieces of each packet, small, at row y; order: slot x of each packet
+  const out = [], W = { ip: 40, homa: 92, tls: 60, nonce: 62, sh: 46, sd: 100, type: 28, tag: 62 };
+  const pk = [[...(st.tls13 ? ["tlshdr"] : ["tlshdr", "nonce"]), "sh0", "sd0"], ["sh1", "sd1"], ["sh2", "sd2", ...(st.tls13 ? ["type"] : []), "tag"]];
+  const widths = pk.map((ids) => W.ip + W.homa + ids.reduce((s, id) => s + W[id.replace(/\d/, "") === "tlshdr" ? "tls" : id.replace(/\d/, "")], 0));
+  let x = 40;
+  const xs = widths.map((w) => { const v = x; x += w + 26; return v; });
+  pk.forEach((ids, i) => {
+    let px = (order ? order[i] : xs[i]);
+    out.push({ id: "ip" + i, x: px, y, w: W.ip, kind: "k-ip", lb: "IP", hx: "id " + (i + 1) }); px += W.ip;
+    out.push({ id: "hm" + i, x: px, y, w: W.homa, kind: "k-homa", lb: "Homa DATA", hx: "pad " + (st.rec * REC).toString(16).padStart(6, "0") }); px += W.homa;
+    for (const id of ids) { const w = W[id === "tlshdr" ? "tls" : id.replace(/\d/, "")]; out.push({ id, x: px, y, w, pk: i }); px += w; }
+  });
+  return { out, xs, widths };
+}
+
+/* ---------- scenes: everything on stage for (step, phase) ---------- */
+function scene(step, ph) {
+  const c = st.c, R = [];
+  // 1. the message: one bar that stays on top; 2. records cut out of it
+  R.push({ id: "msg", x: 150, y: 40, w: 1000, h: 42, cls: "el k-data" + (step === 0 ? " glow" : ""),
+    html: box(`message · ${REC * NREC} bytes`, asc(enc.encode(TEXT.slice(0, 40))).slice(0, -1) + ' …"'),
+    op: step <= 1 ? 1 : 0.45, from: { x: -900, op: 0 } });
+  R.push({ id: "msgtext", x: 150, y: 90, cls: "formula", html: `<b>"</b>${TEXT.trim().replace(/&/g, "&amp;").replace(/</g, "&lt;")}<b>"</b>`, op: step === 0 ? 1 : 0 });
+  for (let r = 1; r < NREC; r++) // where SMT cuts
+    R.push({ id: "cut" + r, x: 150 + r * (1000 / 3) - 1, y: 32, w: 2, h: 58, cls: "el k-ghost", html: "", op: step === 1 ? 1 : 0, z: 3 });
+  if (step >= 1) for (let r = 0; r < NREC; r++) {
+    R.push({ id: "m" + r, x: 150 + r * 340, y: 100, w: 320, h: 42, cls: "el k-data" + (r === st.rec && step >= 2 ? " glow" : ""),
+      html: box(`record ${r}`, `offset ${r * REC} · index ${r}`), op: r !== st.rec && step >= 2 ? 0.45 : (step >= 5 ? 0.3 : 1),
+      dl: step === 1 ? 300 + r * 160 : 0, from: { x: 150 + r * (1000 / 3), y: 40, w: 1000 / 3, op: 0 } });
+  }
+  $("#lbl-msg").style.opacity = step <= 1 ? 1 : 0.45;
+  $("#lbl-rec").style.opacity = step >= 1 ? (step >= 5 ? .3 : 1) : 0;
+  // 2-4: the record, in the zoom row
+  if (step >= 2) {
+    let parts = zoomParts(c);
+    const sealed = step >= 5 || (step === 4 && ph >= 9);
+    if (sealed) parts = ctParts(c, parts);
+    const inZoom = step <= 4;
+    $("#lbl-zoom").textContent = `record ${st.rec}`; $("#lbl-zoom").style.opacity = inZoom ? 1 : 0;
+    if (inZoom) {
+      parts.forEach((q, i) => R.push({ id: q.id, x: q.x, y: q.y, w: q.w, h: q.h, cls: "el " + q.kind, html: box(q.lb, q.hx), dl: step === 2 ? i * 90 : 0,
+        from: q.id.startsWith("sh") ? { y: q.y - 60, op: 0 } : q.id.startsWith("sd") ? { x: 150 + st.rec * 340 + (q.seg * 107), y: 100, w: 107, op: 1 } : { y: q.y + 40, op: 0 }, z: 2 }));
+      R.push({ id: "zoomline", x: 150 + st.rec * 340 + 150, y: 147, cls: "badge", html: "▼ one record = one GSO packet", op: step >= 5 ? 0 : 1 });
+    } else {
+      const P = packetPos(c, step === 5 ? 175 : 650, null);
+      const look = Object.fromEntries(parts.map((q) => [q.id, q]));
+      P.out.forEach((q) => {
+        const src = look[q.id];
+        if (q.id.startsWith("ip") || q.id.startsWith("hm")) {
+          R.push({ id: q.id, x: q.x, y: q.y, w: q.w, h: 46, cls: "el " + q.kind, html: box(q.lb, q.hx), from: { x: q.x - 80, op: 0 }, z: 3 });
+        } else if (src) {
+          const lb = { tlshdr: "TLS hdr", nonce: "nonce", type: "type" }[q.id] ?? (q.id.startsWith("sh") ? "seg hdr" : src.lb);
+          R.push({ id: q.id, x: q.x, y: q.y, w: q.w, h: 46, cls: "el " + src.kind, html: box(lb, q.w < 70 ? undefined : src.hx.length > 14 ? src.hx.slice(0, 11) + " …" : src.hx), z: 3 });
+        }
+      });
+      $("#lbl-pkt").textContent = step === 5 ? "packets" : "";
+    }
+  }
+  // 3. nonce workshop (step index 3)
+  const showBits = step === 3 || (step === 4 && ph < 9);
+  $("#lbl-seq").textContent = showBits ? "seq" : "";
+  if (step === 3 || step === 4) bitScene(R, step === 3 ? ph : 99, showBits ? 1 : 0);
+  // 4. sealing extras
+  if (step === 4) {
+    R.push({ id: "sweep", x: 150, y: 169, w: 70, h: 70, cls: "sweep", op: 0 });
+    R.push({ id: "aadbox", x: 150, y: 285, cls: "formula", html: `AAD = <b>${hex(c.aad)}</b>`, op: ph >= 9 ? 1 : 0 });
+    R.push({ id: "keybox", x: 150, y: 317, cls: "formula", html: `key = ${c.keyHex} &nbsp; nonce = <b>${hex(c.nonce)}</b>`, op: ph >= 9 ? 1 : 0 });
+  }
+  return R;
+}
+
+/* bit cells: RPC id (48), seq (64), nonce bytes (12) */
+const PITCH = 15, X0 = 175, Y_ID = 285, Y_SEQ = 338, Y_NON = 404;
+const colX = (bit) => X0 + (63 - bit) * PITCH;
+function bitScene(R, ph, vis) {
+  const c = st.c, id48 = st.rpc & MASK48, seq = c.seq;
+  // phase 0: id row; 1: shifted right by 1; 2: moved into seq bits 63..17; 3: response bit; 4: index bits; 5: nonce
+  for (let k = 0; k < 48; k++) {
+    const v = Number((id48 >> BigInt(k)) & 1n);
+    let x = colX(k), y = Y_ID, op = vis, cls = "bit id" + (v ? " one" : "");
+    if (ph >= 1) { x = colX(k - 1); if (k === 0) { y = Y_ID + 24; op = 0; } }
+    if (ph >= 2 && k > 0) { x = colX(k - 1 + 17); y = Y_SEQ; op = k - 1 + 17 <= 63 ? vis : 0; }
+    const dl = ph === 0 ? k * 12 : ph === 2 ? (47 - k) * 16 : 0;
+    R.push({ id: "ib" + k, x, y, cls, html: String(v), op, dl, from: { y: Y_ID - 30, op: 0 } });
+  }
+  R.push({ id: "idlbl", x: colX(47) - 4, y: Y_ID - 22, cls: "formula", html: `<span class="c-id">RPC id</span> = <b>0x${st.rpc.toString(16)}</b> (low 48 bits)${ph >= 1 ? " &nbsp;→ &gt;&gt; 1" : ""}${ph >= 2 ? " → &lt;&lt; 17" : ""}`, op: vis });
+  for (let b = 0; b < 64; b++) { // the seq row's empty slots
+    const v = Number((seq >> BigInt(b)) & 1n);
+    let cls = "bit", show = vis, txt = "·";
+    if (b === 16 && ph >= 3) { cls = "bit rsp" + (v ? " one" : ""); txt = String(v); }
+    if (b < 16 && ph >= 4) { cls = "bit ix" + (v ? " one" : ""); txt = String(v); }
+    const occupiedById = ph >= 2 && b >= 17;
+    R.push({ id: "sb" + b, x: colX(b), y: Y_SEQ, cls, html: occupiedById ? "" : txt, op: occupiedById ? 0 : show, dl: ph === 4 && b < 16 ? (15 - b) * 35 : 0, from: { op: 0 } });
+  }
+  R.push({ id: "seqf", x: X0, y: Y_SEQ + 30, cls: "formula", op: vis && ph >= 2 ? 1 : 0,
+    html: `<span class="c-id">RPC id &gt;&gt; 1 (bits 63–17)</span> &nbsp; <span class="c-r">response bit (16) = ${st.resp}</span> &nbsp; <span class="c-ix">record index (15–0) = ${st.rec}</span> &nbsp; seq = <b>0x${seq.toString(16).padStart(16, "0")}</b>` });
+  // nonce bytes
+  const n = c.nonce;
+  for (let j = 0; j < 12; j++) {
+    const salt = j < 4;
+    R.push({ id: "nb" + j, x: X0 + j * 46, y: Y_NON, cls: "byte " + (salt ? "k-tls" : "k-seg"), html: hex(n.slice(j, j + 1)), op: vis && ph >= 5 ? 1 : 0, dl: ph === 5 ? j * 70 : 0, from: { y: Y_NON + 30, op: 0 } });
+  }
+  R.push({ id: "nonf", x: X0 + 12 * 46 + 14, y: Y_NON + 6, cls: "formula", op: vis && ph >= 5 ? 1 : 0,
+    html: st.tls13 ? "nonce = salt ‖ (iv XOR seq)" : "nonce = salt ‖ seq &nbsp;(TLS 1.2)" });
+}
+
+/* ---------- driving the steps ---------- */
+const PHASES = [1, 1, 1, 6, 10, 1, 1, 1];
+const wait = (ms, run) => new Promise((ok) => setTimeout(() => ok(run === st.run), REDUCED ? 0 : ms));
+function render(step, ph) { st.run++; for (const o of scene(step, ph)) put(o.id, o); sweepOut(); }
+
+async function enter(step) {
+  const run = ++st.run;
+  const go = (ph) => { if (run !== st.run) return false; for (const o of scene(step, ph)) put(o.id, o); for (const [id, e] of els) if (e.dataset.seen != st.run) { e.style.opacity = 0; } return true; };
+  const keep = (e) => (e.dataset.seen = st.run);
+  st.run = run;
+  if (REDUCED) { go(step === 4 ? 9 : PHASES[step] - 1); if (step === 7) await recvAnim(run); return; }
+  if (step === 3) { for (let ph = 0; ph < 6; ph++) { if (!go(ph)) return; if (!(await wait(ph === 0 ? 900 : 1100, run))) return; } return; }
+  if (step === 4) { go(0); await sealAnim(run, go); return; }
+  if (step === 5) { go(0); return; }
+  if (step === 6) { go(0); await wireAnim(run); return; }
+  if (step === 7) { go(0); await recvAnim(run); return; }
+  go(0);
+}
+
+async function sealAnim(run, go) {
+  const sw = els.get("sweep"); if (!sw) return;
+  sw.style.transition = "none"; sw.style.transform = "translate(140px, 169px)"; sw.style.opacity = 1; void sw.offsetWidth;
+  sw.style.transition = ""; sw.style.transform = "translate(1080px, 169px)";
+  // scramble each data box as the sweep passes
+  const ids = ["sh0", "sd0", "sh1", "sd1", "sh2", "sd2", "type"].filter((i) => els.has(i));
+  for (const id of ids) { if (!(await wait(170, run))) return; scramble(els.get(id)); }
+  if (!(await wait(600, run))) return;
+  sw.style.opacity = 0;
+  go(9);
+  const t = els.get("tag"); if (t) { t.classList.add("glow", "hit"); }
+}
+function scramble(e) {
+  const hx = e.querySelector(".hx"); if (!hx) return; const n = hx.textContent.length; let k = 0;
+  const id = setInterval(() => { hx.textContent = Array.from({ length: n }, () => "0123456789abcdef"[Math.random() * 16 | 0]).join(""); if (++k > 8) clearInterval(id); }, 45);
+  e.classList.add("hit");
+}
+
+async function wireAnim(run) {
+  const c = st.c, P = packetPos(c, 650, null), byPk = [[], [], []];
+  for (const q of P.out) { const pk = q.pk ?? Number(q.id.slice(-1)); byPk[q.id.startsWith("ip") || q.id.startsWith("hm") ? Number(q.id.slice(2)) : q.pk].push(q); }
+  // start: the packets at the sender row
+  const S = packetPos(c, 175, null);
+  const sp = Object.fromEntries(S.out.map((q) => [q.id, q]));
+  for (const q of P.out) { const e = els.get(q.id); if (e) { e.style.transition = "none"; e.style.transform = `translate(${sp[q.id].x}px, 175px)`; } }
+  void stage.offsetWidth; for (const q of P.out) { const e = els.get(q.id); if (e) e.style.transition = ""; }
+  // control packets going the other way
+  const ctl = ["GRANT", "ACK", "GRANT"].map((t, i) => put("ctl" + i, { x: 1170, y: 572, w: 70, h: 26, cls: "el k-ctl", html: box(t), op: 0, z: 4 }));
+  const order = [0, 2, 1], delay = [0, 350, 1100]; // packet 1 leaves last and arrives last
+  if (!(await wait(250, run))) return;
+  order.forEach((i, n) => setTimeout(() => {
+    if (run !== st.run) return;
+    for (const q of byPk[i]) { const e = els.get(q.id); if (e) { e.style.transitionDuration = "1.6s"; e.style.transform = `translate(${sp[q.id].x + 120 + n * 30}px, 510px)`; } }
+    if (i === 1 && st.tamper) setTimeout(() => { if (run !== st.run) return; const e = els.get("sd1"); if (e) { e.classList.add("tampered", "hit"); } }, 900);
+    setTimeout(() => { if (run !== st.run) return; for (const q of byPk[i]) { const e = els.get(q.id); if (e) { e.style.transitionDuration = ""; e.style.transform = `translate(${q.x}px, ${q.y}px)`; } } }, 1700);
+  }, delay[n]));
+  ctl.forEach((e, i) => setTimeout(() => { if (run !== st.run) return; e.style.opacity = 1; e.style.transitionDuration = "2.6s"; e.style.transform = "translate(20px, 572px)"; setTimeout(() => (e.style.opacity = 0), 2400); }, 500 + i * 700));
+}
+
+async function recvAnim(run) {
+  const c = st.c, ok = await verify(c); if (run !== st.run) return;
+  if (st.tamper) { const e = els.get("sd1"); if (e) e.classList.add("tampered"); }
+  const frame = put("frame", { x: 30, y: 640, w: 1140, h: 66, cls: "el k-ghost", html: "", op: 1, z: 0 });
+  if (!(await wait(500, run))) return;
+  frame.classList.add("glow");
+  const sw = put("rsweep", { x: 30, y: 640, w: 90, h: 66, cls: "sweep", op: 1, z: 5 });
+  void sw.offsetWidth; sw.style.transform = "translate(1080px, 640px)";
+  if (!(await wait(1500, run))) return;
+  sw.style.opacity = 0; frame.classList.remove("glow"); frame.classList.add(ok ? "okglow" : "badglow");
+  const v = put("verdict", { x: 860, y: 600, cls: "verdict", html: ok ? "✓ tag verified" : "✗ tag mismatch → EBADMSG", op: 1, z: 6 });
+  v.style.background = ok ? "var(--ok)" : "var(--bad)";
+  if (!ok) { for (const [id, e] of els) if (/^(sd|sh|tag|type)/.test(id)) e.classList.add("shake"); return; }
+  if (!(await wait(900, run))) return;
+  // decrypt: ciphertext back to message bytes, segment headers drop out
+  for (let s = 0; s < NSEG; s++) {
+    const d = els.get("sd" + s); if (d) { d.className = "el k-data hit"; d.querySelector(".lb").textContent = "segment " + s; d.querySelector(".hx").textContent = asc(c.segs[s].data).slice(0, 13) + " …"; }
+    const h = els.get("sh" + s); if (h) { h.className = "el k-seg"; h.querySelector(".hx") && (h.querySelector(".hx").textContent = ""); }
+    if (!(await wait(250, run))) return;
+  }
+  if (!(await wait(700, run))) return;
+  for (const id of ["sh0", "sh1", "sh2", "tlshdr", "nonce", "type", "tag", "ip0", "ip1", "ip2", "hm0", "hm1", "hm2"]) { const e = els.get(id); if (e) { e.style.opacity = 0; } }
+  frame.style.opacity = 0; v.style.opacity = 0;
+  if (!(await wait(500, run))) return;
+  for (let s = 0; s < NSEG; s++) { const d = els.get("sd" + s); if (d) { d.style.transform = `translate(${150 + s * 220}px, 650px)`; d.style.width = "220px"; d.querySelector(".hx").textContent = asc(c.segs[s].data); } }
+  put("recv", { x: 150, y: 704, cls: "formula", html: `recvmsg() gets ${REC} bytes of record ${st.rec}` + (st.resp ? "" : ` &nbsp;·&nbsp; replay guard (server): RPC 0x${st.rpc.toString(16)} not seen before, accepted`), op: 1, z: 6 });
+}
+
+/* ---------- controls ---------- */
+let timer = 0;
+async function show(step, animate = true) {
+  st.step = Math.max(0, Math.min(STEPS.length - 1, step));
+  st.c = await compute();
+  $("#capn").textContent = `step ${st.step + 1} of ${STEPS.length}`;
+  $("#caph").textContent = STEPS[st.step][0];
+  $("#capp").textContent = STEPS[st.step][1];
+  [...$("#dots").children].forEach((b, i) => { b.setAttribute("aria-current", i === st.step ? "step" : "false"); b.classList.toggle("done", i < st.step); });
+  $("#wire").style.opacity = st.step >= 6 ? .8 : .25;
+  values();
+  for (const [id, e] of els) if (/^(frame|verdict|recv|rsweep|ctl)/.test(id)) { e.remove(); els.delete(id); }
+  for (const [, e] of els) e.classList.remove("okglow", "badglow", "shake", "tampered", "hit", "glow");
+  if (animate) await enter(st.step); else render(st.step, PHASES[st.step] - 1);
+  schedule();
+}
+function schedule() {
+  clearTimeout(timer);
+  if (!st.playing) return;
+  const hold = [3600, 3600, 4200, 8400, 6200, 3800, 6200, 9000][st.step];
+  timer = setTimeout(() => show(st.step === STEPS.length - 1 ? 0 : st.step + 1), hold);
+}
+function values() {
+  const c = st.c, dl = $("#values");
+  const rows = [
+    ["RPC id · direction", `0x${st.rpc.toString(16)} · ${st.resp ? "response (server key)" : "request (client key)"}`],
+    ["seq (record " + st.rec + ")", "0x" + c.seq.toString(16).padStart(16, "0")],
+    ["nonce", hex(c.nonce)],
+    ["AAD", hex(c.aad)],
+    ["TLS header on the wire", hex(c.tlsHdr) + (st.tls13 ? "" : " ‖ explicit nonce " + hex(c.nonceExplicit))],
+    ["plaintext (seg hdrs + data" + (st.tls13 ? " + type" : "") + ")", hex(c.pt)],
+    ["ciphertext", hex(c.ct)],
+    ["tag", hex(c.tag)],
+    ["key", c.keyHex + (c.real ? " (AES-GCM by WebCrypto)" : " (WebCrypto is off here: stand-in bytes)")],
+  ];
+  dl.innerHTML = rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+}
+STEPS.forEach((s, i) => { const b = document.createElement("button"); b.textContent = i + 1; b.title = s[0]; b.setAttribute("aria-label", `Step ${i + 1}: ${s[0]}`); b.onclick = () => { show(i); }; $("#dots").appendChild(b); });
+$("#prev").onclick = () => show(st.step - 1);
+$("#next").onclick = () => show(st.step + 1);
+$("#play").onclick = () => { st.playing = !st.playing; $("#play").textContent = st.playing ? "Pause" : "Play"; schedule(); };
+$("#play").textContent = st.playing ? "Pause" : "Play";
+const reset = () => { for (const [, e] of els) e.remove(); els.clear(); show(st.step, false); };
+document.querySelectorAll('input[name="tls"]').forEach((r) => r.onchange = () => { st.tls13 = r.value === "13"; reset(); });
+document.querySelectorAll('input[name="dir"]').forEach((r) => r.onchange = () => { st.resp = Number(r.value); reset(); });
+document.querySelectorAll('input[name="rec"]').forEach((r) => r.onchange = () => { st.rec = Number(r.value); reset(); });
+$("#rpc").onchange = () => { try { const v = BigInt($("#rpc").value.trim()); st.rpc = v & ~1n; $("#rpc").value = "0x" + st.rpc.toString(16); reset(); } catch (e) { $("#rpc").value = "0x" + st.rpc.toString(16); } };
+$("#tamper").onchange = () => { st.tamper = $("#tamper").checked; if (st.step >= 6) show(st.step); };
+addEventListener("keydown", (e) => { if (e.target.tagName === "INPUT") return; if (e.key === "ArrowRight") show(st.step + 1); else if (e.key === "ArrowLeft") show(st.step - 1); else if (e.key === " ") { e.preventDefault(); $("#play").click(); } });
+
+function fit() { const w = wrap.clientWidth, s = Math.max(0.62, Math.min(1, w / 1200)); stage.style.transform = `scale(${s})`; sizer.style.width = 1200 * s + "px"; sizer.style.height = 740 * s + "px"; }
+new ResizeObserver(fit).observe(wrap); fit();
+const m = /^#s([1-8])$/.exec(location.hash); // #s1 … #s8 opens that step, paused
+if (m) { st.playing = false; $("#play").textContent = "Play"; }
+show(m ? Number(m[1]) - 1 : 0);
+})();
+</script>
+</body>
+</html>
